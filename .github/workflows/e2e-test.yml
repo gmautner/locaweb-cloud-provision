@@ -9,18 +9,14 @@
 #   CLOUDSTACK_API_KEY              - CloudStack API key
 #   CLOUDSTACK_SECRET_KEY           - CloudStack secret key
 #   SSH_PRIVATE_KEY                 - SSH private key for VM access
-#   POSTGRES_PASSWORD               - PostgreSQL password (for DB scenarios)
+#   SECRET_ENV_VARS                 - App secrets in dotenv format (POSTGRES_PASSWORD, DATABASE_URL, MY_SECRET)
 #   ROUTE_53_AWS_ACCESS_KEY_ID      - AWS access key for Route53 DNS management
 #   ROUTE_53_AWS_SECRET_ACCESS_KEY  - AWS secret key for Route53 DNS management
-#
-# Required GitHub Variables/Secrets (dotenv format):
-#   ENV_VARS (variable)   - must contain MY_VAR=... (becomes MY_VAR in container)
-#   SECRET_ENV_VARS (secret)  - must contain MY_SECRET=... (becomes MY_SECRET in container)
 
 name: E2E Test
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -57,6 +53,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure git for e2e commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Install and configure CloudMonkey
         env:
@@ -129,6 +130,10 @@ jobs:
           # Also clean up ZP02 in case the recovery scenario left resources
           python3 -u scripts/teardown_infrastructure.py \
             --network-name "${{ github.event.repository.name }}-${{ github.repository_id }}-preview" --zone ZP02 || true
+          # Clean up any leftover e2e branches
+          git branch -r --list 'origin/e2e-test-*' | while read -r b; do
+            git push origin --delete "${b#origin/}" || true
+          done
 
       - name: Test summary
         if: always()

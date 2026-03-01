@@ -144,9 +144,10 @@ def main():
         ips.append(("web", web_ip))
     for i, ip in enumerate(output.get("worker_ips", []), 1):
         ips.append((f"worker-{i}", ip))
-    db_ip = output.get("db_ip", "")
-    if db_ip:
-        ips.append(("db", db_ip))
+    for name, data in output.get("accessories", {}).items():
+        ip = data.get("ip", "")
+        if ip:
+            ips.append((name, ip))
 
     if not ips:
         print("No VMs found in provision output, skipping.")

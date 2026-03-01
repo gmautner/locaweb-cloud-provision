@@ -1,0 +1,30 @@
+service: <%= ENV['REPO_NAME'] %>
+image: <%= ENV['REPO_FULL'] %>
+
+servers:
+  web:
+    hosts:
+      - <%= ENV['INFRA_WEB_IP'] %>
+
+proxy:
+  host: <%= ENV['INFRA_WEB_IP'] %>.nip.io
+
+ssh:
+  user: root
+  keys: [.kamal/ssh_key]
+
+registry:
+  server: ghcr.io
+  username: <%= ENV['REPO_OWNER'] %>
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+  cache:
+    type: gha
+    options: mode=max
+
+accessories:
+  db:
+    host: <%= ENV['INFRA_DB_IP'] %>

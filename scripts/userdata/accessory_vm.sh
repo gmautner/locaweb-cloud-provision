@@ -1,5 +1,5 @@
 #!/bin/bash
-# Userdata script for Database VM
+# Userdata script for Accessory VMs (database, cache, etc.)
 # Installs fail2ban and waits for attached data disk and formats/mounts it.
 # Docker is installed automatically by Kamal on first deploy.
 set -euo pipefail
@@ -20,7 +20,7 @@ F2BEOF
 systemctl restart fail2ban
 
 DEVICE="/dev/vdb"
-MOUNT_POINT="/data/db"
+MOUNT_POINT="/data"
 
 # Wait for the attached data disk to appear
 echo "Waiting for $DEVICE..."
@@ -46,10 +46,6 @@ fi
 # Create mount point and mount
 mkdir -p "$MOUNT_POINT"
 mount "$DEVICE" "$MOUNT_POINT"
-
-# Create pgdata subdirectory so the Docker bind-mount target is clean
-# (avoids ext4 lost+found interfering with PostgreSQL initdb)
-mkdir -p "$MOUNT_POINT/pgdata"
 
 # Add to fstab for persistence
 if ! grep -q "$DEVICE" /etc/fstab; then

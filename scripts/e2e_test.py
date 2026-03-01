@@ -59,7 +59,7 @@ WORKFLOW_WATCH_TIMEOUT = 2400  # 40 minutes max for a deploy workflow
 ROUTE_53_AWS_ACCESS_KEY_ID = os.environ.get("ROUTE_53_AWS_ACCESS_KEY_ID", "")
 ROUTE_53_AWS_SECRET_ACCESS_KEY = os.environ.get("ROUTE_53_AWS_SECRET_ACCESS_KEY", "")
 ROUTE_53_HOSTED_ZONE_ID = os.environ.get("ROUTE_53_HOSTED_ZONE_ID", "")
-DNS_DOMAIN_SUFFIX = "kamal.giba.tech"
+E2ETEST_DOMAIN = "e2e.kamal.giba.tech"
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +125,6 @@ def route53_delete_a_record(domain, ip):
         print(f"  Warning: Route53 DELETE failed: {result.stderr}")
     else:
         print(f"  Route53 A record deleted: {domain}")
-
-
-def generate_test_domain():
-    """Generate a timestamped test domain under kamal.giba.tech."""
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"test-{ts}.{DNS_DOMAIN_SUFFIX}"
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +308,7 @@ def get_latest_run_id(workflow):
     return 0
 
 
-def trigger_workflow(workflow, inputs):
+def trigger_workflow(workflow, inputs, ref=None):
     """Trigger a workflow and wait for the new run to appear.
 
     Returns the run ID of the triggered workflow.
@@ -324,11 +318,13 @@ def trigger_workflow(workflow, inputs):
 
     # Build the gh workflow run command
     args = ["workflow", "run", workflow, "-R", REPO_FULL]
+    if ref:
+        args.extend(["--ref", ref])
     for k, v in inputs.items():
         args.extend(["-f", f"{k}={v}"])
 
     gh(*args)
-    print(f"  Triggered {workflow}, waiting for new run...")
+    print(f"  Triggered {workflow} (ref={ref or 'default'}), waiting for new run...")
 
     # Poll until a new run appears
     deadline = time.time() + WORKFLOW_POLL_TIMEOUT
@@ -378,10 +374,10 @@ def download_artifact(run_id, artifact_name, dest_dir="/tmp"):
     return out_dir
 
 
-def trigger_deploy(inputs):
+def trigger_deploy(inputs, ref=None):
     """Trigger deploy.yml, wait for completion, return provision output dict."""
     print("\n  --- Triggering deploy workflow ---")
-    run_id = trigger_workflow("deploy.yml", inputs)
+    run_id = trigger_workflow("deploy.yml", inputs, ref=ref)
     wait_for_run(run_id)
     art_dir = download_artifact(run_id, "provision-output")
     output_path = os.path.join(art_dir, "provision-output.json")
@@ -389,15 +385,104 @@ def trigger_deploy(inputs):
         return json.load(f)
 
 
-def trigger_teardown(env_name=DEFAULT_ENV_NAME, zone=None):
+def trigger_teardown(env_name=DEFAULT_ENV_NAME, zone=None, ref=None):
     """Trigger teardown.yml and wait for completion."""
     print("\n  --- Triggering teardown workflow ---")
     run_id = trigger_workflow("teardown.yml", {
         "zone": zone or ZONE,
         "env_name": env_name,
-    })
+    }, ref=ref)
     wait_for_run(run_id)
     print("  Teardown complete")
+
+
+# ---------------------------------------------------------------------------
+# Destination file management (mirrors agent behavior)
+# ---------------------------------------------------------------------------
+
+def write_destination_file(env_name, workers=0, domain=None, accessories=None):
+    """Write a Kamal destination file with the exact config needed.
+
+    Mirrors what an agent does via generate_kamal_destination.py.
+    """
+    lines = [
+        "service: <%= ENV['REPO_NAME'] %>",
+        "image: <%= ENV['REPO_FULL'] %>",
+        "",
+        "servers:",
+        "  web:",
+        "    hosts:",
+        "      - <%= ENV['INFRA_WEB_IP'] %>",
+    ]
+    if workers > 0:
+        lines.append("  workers:")
+        lines.append("    hosts:")
+        for i in range(workers):
+            lines.append(f"      - <%= ENV['INFRA_WORKER_IP_{i}'] %>")
+    lines.extend([
+        "",
+        "proxy:",
+        f"  host: {domain}" if domain else "  host: <%= ENV['INFRA_WEB_IP'] %>.nip.io",
+        "",
+        "ssh:",
+        "  user: root",
+        "  keys: [.kamal/ssh_key]",
+        "",
+        "registry:",
+        "  server: ghcr.io",
+        "  username: <%= ENV['REPO_OWNER'] %>",
+        "  password:",
+        "    - KAMAL_REGISTRY_PASSWORD",
+        "",
+        "builder:",
+        "  arch: amd64",
+        "  cache:",
+        "    type: gha",
+        "    options: mode=max",
+    ])
+    if accessories:
+        lines.append("")
+        lines.append("accessories:")
+        for name in accessories:
+            lines.append(f"  {name}:")
+            lines.append(f"    host: <%= ENV['INFRA_{name.upper()}_IP'] %>")
+    lines.append("")
+
+    path = os.path.join(SCRIPT_DIR, "..", "config", f"deploy.{env_name}.yml")
+    path = os.path.abspath(path)
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    print(f"  Wrote destination file: {path}")
+    return path
+
+
+def git_commit_and_push(message):
+    """Stage all changes, commit, and push to the e2e branch."""
+    subprocess.run(["git", "add", "-A"], check=True, cwd=SCRIPT_DIR)
+    subprocess.run(["git", "commit", "-m", message],
+                   check=True, cwd=SCRIPT_DIR)
+    subprocess.run(["git", "push"], check=True, cwd=SCRIPT_DIR)
+    print(f"  Committed and pushed: {message}")
+
+
+def setup_e2e_branch():
+    """Create a temporary branch for e2e test config changes."""
+    branch = f"e2e-test-{int(time.time())}"
+    subprocess.run(["git", "checkout", "-b", branch],
+                   check=True, cwd=SCRIPT_DIR)
+    subprocess.run(["git", "push", "-u", "origin", branch],
+                   check=True, cwd=SCRIPT_DIR)
+    print(f"  Created e2e branch: {branch}")
+    return branch
+
+
+def cleanup_e2e_branch(branch):
+    """Delete the temporary e2e branch."""
+    # Switch back to the original branch before deleting
+    subprocess.run(["git", "checkout", "-"], check=False, cwd=SCRIPT_DIR)
+    subprocess.run(["git", "push", "origin", "--delete", branch],
+                   check=False, cwd=SCRIPT_DIR)
+    print(f"  Cleaned up e2e branch: {branch}")
 
 
 # ---------------------------------------------------------------------------
@@ -645,8 +730,9 @@ class HTTPVerifier:
         try:
             ctx = ssl.create_default_context()
             conn = ctx.wrap_socket(
-                __import__('socket').create_connection((self.domain, 443), timeout=10),
-                server_hostname=self.domain,
+                __import__('socket').create_connection(
+                    (self.host, 443), timeout=10),
+                server_hostname=self.host,
             )
             cert = conn.getpeercert()
             conn.close()
@@ -760,6 +846,7 @@ class E2ETestRunner:
     def __init__(self):
         self.scenarios = []
         self.ssh = SSHVerifier()
+        self.branch = None
 
     def save_results(self):
         """Write test results JSON."""
@@ -791,8 +878,22 @@ class E2ETestRunner:
         print(f"\nResults written to {RESULTS_PATH}")
         return total_fail == 0
 
+    def prepare_deploy(self, env_name, workers=0, domain=None,
+                        accessories=None):
+        """Write destination file, commit, and push. Mirrors agent workflow."""
+        acc_str = f", accessories={accessories}" if accessories else ""
+        dom_str = f", domain={domain}" if domain else ""
+        print(f"\n  --- Preparing config: {env_name} "
+              f"(workers={workers}{dom_str}{acc_str}) ---")
+        write_destination_file(env_name, workers=workers, domain=domain,
+                               accessories=accessories)
+        git_commit_and_push(
+            f"e2e: {env_name} workers={workers}{dom_str}{acc_str}")
+
     def run(self):
         """Run the selected scenario(s)."""
+        self.branch = setup_e2e_branch()
+
         scenario_map = {
             "complete": [self._scenario_complete],
             "web-only": [self._scenario_web_only],
@@ -808,9 +909,12 @@ class E2ETestRunner:
             ],
         }
 
-        runners = scenario_map.get(SCENARIO, [self._scenario_complete])
-        for runner in runners:
-            runner()
+        try:
+            runners = scenario_map.get(SCENARIO, [self._scenario_complete])
+            for runner in runners:
+                runner()
+        finally:
+            cleanup_e2e_branch(self.branch)
 
         return self.save_results()
 
@@ -821,24 +925,27 @@ class E2ETestRunner:
     def _scenario_complete(self):
         s = TestScenario("Complete Deploy (web + workers + db)")
         with s:
+            # Prepare destination file (1 worker + db)
+            self.prepare_deploy(DEFAULT_ENV_NAME, workers=1,
+                                accessories=["db"])
+
             # Deploy
             output = trigger_deploy({
                 "zone": ZONE,
                 "env_name": DEFAULT_ENV_NAME,
-                "workers_enabled": "true",
                 "workers_replicas": "1",
-                "db_enabled": "true",
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
                 "automatic_reboot": "true",
                 "automatic_reboot_time_utc": "03:30",
-            })
+            }, ref=self.branch)
 
             web_ip = output.get("web_ip", "")
             worker_ips = output.get("worker_ips", [])
-            db_ip = output.get("db_ip", "")
+            db_ip = output.get("accessories", {}).get("db", {}).get("ip", "")
 
             s.assert_true(web_ip, "Deploy produced web_ip")
             s.assert_true(len(worker_ips) >= 1, "Deploy produced worker_ips")
-            s.assert_true(db_ip, "Deploy produced db_ip")
+            s.assert_true(db_ip, "Deploy produced db accessory ip")
 
             if not web_ip:
                 self.scenarios.append(s)
@@ -887,30 +994,30 @@ class E2ETestRunner:
             s.assert_contains(body, test_filename,
                               "Uploaded file appears on page")
 
-            # SSH: Web VM - blob mount + implicit disk size (default 20GB)
+            # SSH: Web VM - data mount + implicit disk size (default 20GB)
             s.assert_true(
                 self.ssh.wait_for_ssh(web_ip, timeout=60),
                 "SSH to web VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(web_ip, "/data/blobs"),
-                "SSH to web VM: /data/blobs mounted")
+                self.ssh.verify_mount_point(web_ip, "/data/"),
+                "SSH to web VM: /data/ mounted")
             s.assert_true(
-                self.ssh.verify_disk_writable(web_ip, "/data/blobs"),
-                "SSH to web VM: /data/blobs writable")
-            blob_size = self.ssh.get_block_device_size(web_ip, "/data/blobs")
-            s.assert_equal(blob_size, 20 * 1024**3,
-                           "Blob disk implicit default size is 20GB")
+                self.ssh.verify_disk_writable(web_ip, "/data/"),
+                "SSH to web VM: /data/ writable")
+            web_size = self.ssh.get_block_device_size(web_ip, "/data/")
+            s.assert_equal(web_size, 20 * 1024**3,
+                           "Web disk implicit default size is 20GB")
 
-            # SSH: DB VM - db mount + implicit disk size (default 20GB)
+            # SSH: DB VM - data mount + disk size from accessories (20GB)
             s.assert_true(
                 self.ssh.wait_for_ssh(db_ip, timeout=60),
                 "SSH to DB VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(db_ip, "/data/db"),
-                "SSH to DB VM: /data/db mounted")
-            db_size = self.ssh.get_block_device_size(db_ip, "/data/db")
+                self.ssh.verify_mount_point(db_ip, "/data/"),
+                "SSH to DB VM: /data/ mounted")
+            db_size = self.ssh.get_block_device_size(db_ip, "/data/")
             s.assert_equal(db_size, 20 * 1024**3,
-                           "DB disk implicit default size is 20GB")
+                           "DB disk size is 20GB (from accessories config)")
 
             # SSH: Worker VM - env vars via docker
             for i, wip in enumerate(worker_ips, 1):
@@ -929,7 +1036,9 @@ class E2ETestRunner:
                                   f"SSH to Worker-{i}: MY_SECRET is set")
 
             # Unattended upgrades: all VMs should have auto-upgrades + reboot at 03:30
-            all_ips = [("web", web_ip)] + [(f"worker-{i}", w) for i, w in enumerate(worker_ips, 1)] + [("db", db_ip)]
+            all_ips = ([("web", web_ip)]
+                       + [(f"worker-{i}", w) for i, w in enumerate(worker_ips, 1)]
+                       + [("db", db_ip)])
             for label, ip in all_ips:
                 if ip:
                     s.assert_true(
@@ -952,13 +1061,13 @@ class E2ETestRunner:
                     s.assert_equal(f2b["findtime"], 600,
                                    f"fail2ban findtime=600 on {label}")
 
-            # Snapshot policies: blob and db volumes should have policies
+            # Snapshot policies: web and db volumes should have policies
             network_name = make_network_name(DEFAULT_ENV_NAME)
-            blob_vol_id = output.get("blob_volume_id", "")
-            db_vol_id = output.get("db_volume_id", "")
-            if blob_vol_id:
-                s.assert_snapshot_policy(blob_vol_id, network_name,
-                                        "blob volume")
+            web_vol_id = output.get("web_volume_id", "")
+            db_vol_id = output.get("accessories", {}).get("db", {}).get("volume_id", "")
+            if web_vol_id:
+                s.assert_snapshot_policy(web_vol_id, network_name,
+                                        "web volume")
             if db_vol_id:
                 s.assert_snapshot_policy(db_vol_id, network_name,
                                         "db volume")
@@ -973,58 +1082,49 @@ class E2ETestRunner:
     # ------------------------------------------------------------------
 
     def _scenario_web_only(self):
-        s = TestScenario("Web-Only Deploy (custom domain + SSL)")
-        domain = generate_test_domain()
-        domain_ip = None
+        s = TestScenario("Web-Only Deploy (no accessories)")
         with s:
-            # Deploy with custom domain (no workers, no db), reboot disabled
+            # Prepare destination file (no workers, no accessories)
+            self.prepare_deploy(DEFAULT_ENV_NAME)
+
+            # Deploy with no accessories (no db), reboot disabled
             output = trigger_deploy({
                 "zone": ZONE,
                 "env_name": DEFAULT_ENV_NAME,
-                "domain": domain,
+                "accessories": "[]",
                 "automatic_reboot": "false",
-            })
+            }, ref=self.branch)
 
             web_ip = output.get("web_ip", "")
-            domain_ip = web_ip  # save for cleanup
             s.assert_true(web_ip, "Deploy produced web_ip")
             s.assert_true("worker_ips" not in output or output["worker_ips"] == [],
                           "No worker IPs in output")
-            s.assert_true("db_ip" not in output or output["db_ip"] == "",
-                          "No DB IP in output")
+            s.assert_true("accessories" not in output or output.get("accessories", {}) == {},
+                          "No accessories in output")
 
             if not web_ip:
                 self.scenarios.append(s)
                 return
 
-            # Create Route53 A record pointing domain to web IP
-            s.assert_true(
-                route53_upsert_a_record(domain, web_ip),
-                f"Route53 A record created: {domain} -> {web_ip}")
-
-            # Wait for DNS propagation (short TTL=60, but give it a moment)
-            print(f"  Waiting 15s for DNS propagation...")
-            time.sleep(15)
-
-            # HTTPS: Health check via domain
-            http = HTTPVerifier(web_ip, domain=domain)
+            # HTTP: Health check via nip.io
+            http = HTTPVerifier(web_ip)
             s.assert_true(
                 http.wait_for_healthy("/up", timeout=300),
-                "HTTPS /up returns 200 (no DB mode)")
+                "HTTP /up returns 200 (no DB mode)")
 
-            # HTTPS: Index page
+            # HTTP: Index page
             status, body = http.get("/")
-            s.assert_equal(status, 200, "HTTPS GET / returns 200")
+            s.assert_equal(status, 200, "HTTP GET / returns 200")
 
-            # HTTPS: Shows "Database not configured"
+            # HTTP: Shows "Database not configured"
             s.assert_contains(body, "Database not configured",
                               "Page shows 'Database not configured'")
 
-            # HTTPS: Env vars still visible
+            # HTTP: Env vars still visible
             s.assert_not_contains(body, "not set",
                                   "Env vars are set (no 'not set' on page)")
 
-            # HTTPS: Upload still works
+            # HTTP: Upload still works
             test_filename = f"e2e-webonly-{int(time.time())}.txt"
             status, _ = http.post_multipart(
                 "/upload", test_filename, "web-only test")
@@ -1035,30 +1135,13 @@ class E2ETestRunner:
             s.assert_contains(body, test_filename,
                               "Uploaded file appears on page")
 
-            # TLS: Verify certificate is valid and issued for the domain
-            cert = http.get_certificate_info()
-            s.assert_true(cert is not None,
-                          "TLS certificate retrieved successfully")
-            if cert:
-                # Check subject matches domain
-                san = cert.get("subjectAltName", [])
-                san_names = [v for t, v in san if t == "DNS"]
-                s.assert_true(
-                    domain in san_names,
-                    f"Certificate SAN contains {domain}")
-                # Check issuer is Let's Encrypt
-                issuer = dict(x[0] for x in cert.get("issuer", []))
-                s.assert_equal(
-                    issuer.get("organizationName", ""), "Let's Encrypt",
-                    "Certificate issued by Let's Encrypt")
-
-            # SSH: Web VM - blob mount
+            # SSH: Web VM - data mount
             s.assert_true(
                 self.ssh.wait_for_ssh(web_ip, timeout=60),
                 "SSH to web VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(web_ip, "/data/blobs"),
-                "SSH to web VM: /data/blobs mounted")
+                self.ssh.verify_mount_point(web_ip, "/data/"),
+                "SSH to web VM: /data/ mounted")
 
             # Unattended upgrades: auto-upgrades present, but no automatic reboot
             s.assert_true(
@@ -1079,19 +1162,15 @@ class E2ETestRunner:
             s.assert_equal(f2b["findtime"], 600,
                            "fail2ban findtime=600 on web")
 
-            # Snapshot policies: blob volume should have a policy
+            # Snapshot policies: web volume should have a policy
             network_name = make_network_name(DEFAULT_ENV_NAME)
-            blob_vol_id = output.get("blob_volume_id", "")
-            if blob_vol_id:
-                s.assert_snapshot_policy(blob_vol_id, network_name,
-                                        "blob volume")
+            web_vol_id = output.get("web_volume_id", "")
+            if web_vol_id:
+                s.assert_snapshot_policy(web_vol_id, network_name,
+                                        "web volume")
 
             # Teardown
             trigger_teardown(DEFAULT_ENV_NAME)
-
-        # Clean up DNS record (outside the with block so it runs even on failure)
-        if domain_ip:
-            route53_delete_a_record(domain, domain_ip)
 
         self.scenarios.append(s)
 
@@ -1100,82 +1179,76 @@ class E2ETestRunner:
     # ------------------------------------------------------------------
 
     def _scenario_scale_up(self):
-        s = TestScenario("Scale Up Workers (1 -> 3) + Offerings & Disks")
+        s = TestScenario("Scale Up Workers (1 -> 3) + Offerings, Disks & TLS")
+        domain_ip = None
         with s:
+            # Prepare destination file (1 worker + db + domain)
+            self.prepare_deploy("e2etest", workers=1,
+                                domain=E2ETEST_DOMAIN, accessories=["db"])
+
             # Deploy with 1 worker, small plans, smaller disks
             output = trigger_deploy({
                 "zone": ZONE,
                 "env_name": "e2etest",
                 "web_plan": "small",
-                "workers_enabled": "true",
                 "workers_replicas": "1",
                 "workers_plan": "small",
-                "db_enabled": "true",
-                "db_plan": "small",
-                "blob_disk_size_gb": "25",
-                "db_disk_size_gb": "20",
-            })
+                "accessories": '[{"name":"db","plan":"small","disk_size_gb":20}]',
+                "web_disk_size_gb": "25",
+            }, ref=self.branch)
 
             web_ip = output.get("web_ip", "")
-            db_ip = output.get("db_ip", "")
+            db_ip = output.get("accessories", {}).get("db", {}).get("ip", "")
             worker_ips = output.get("worker_ips", [])
+            domain_ip = web_ip
             s.assert_true(web_ip, "Deploy produced web_ip")
             s.assert_equal(len(worker_ips), 1,
                            "Initial deploy has 1 worker")
 
-            # Verify initial deploy works
-            http = HTTPVerifier(web_ip)
+            # Create Route53 A record for the e2etest domain
+            s.assert_true(
+                route53_upsert_a_record(E2ETEST_DOMAIN, web_ip),
+                f"Route53 A record created: {E2ETEST_DOMAIN} -> {web_ip}")
+
+            # Wait for DNS propagation
+            print(f"  Waiting 15s for DNS propagation...")
+            time.sleep(15)
+
+            # Verify initial deploy works via custom domain
+            http = HTTPVerifier(web_ip, domain=E2ETEST_DOMAIN)
             s.assert_true(
                 http.wait_for_healthy("/up", timeout=300),
-                "HTTP /up returns 200 (initial deploy)")
+                "HTTPS /up returns 200 (initial deploy via domain)")
 
             # Verify initial disk sizes
             s.assert_true(
                 self.ssh.wait_for_ssh(web_ip, timeout=60),
                 "SSH to web VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(web_ip, "/data/blobs"),
-                "SSH to web VM: /data/blobs mounted")
-            blob_size = self.ssh.get_block_device_size(web_ip, "/data/blobs")
-            s.assert_equal(blob_size, 25 * 1024**3,
-                           "Blob disk initial size is 25GB")
+                self.ssh.verify_mount_point(web_ip, "/data/"),
+                "SSH to web VM: /data/ mounted")
+            web_size = self.ssh.get_block_device_size(web_ip, "/data/")
+            s.assert_equal(web_size, 25 * 1024**3,
+                           "Web disk initial size is 25GB")
 
             if db_ip:
                 s.assert_true(
                     self.ssh.wait_for_ssh(db_ip, timeout=60),
                     "SSH to DB VM: reachable")
                 s.assert_true(
-                    self.ssh.verify_mount_point(db_ip, "/data/db"),
-                    "SSH to DB VM: /data/db mounted")
-                db_size = self.ssh.get_block_device_size(db_ip, "/data/db")
+                    self.ssh.verify_mount_point(db_ip, "/data/"),
+                    "SSH to DB VM: /data/ mounted")
+                db_size = self.ssh.get_block_device_size(db_ip, "/data/")
                 s.assert_equal(db_size, 20 * 1024**3,
                                "DB disk initial size is 20GB")
 
-                # Verify PG tuning for 'small' plan (2 GiB RAM)
-                db_container = f"{REPO_NAME}-db"
-                sb = self.ssh.get_pg_setting(db_ip, db_container, "shared_buffers")
-                s.assert_equal(sb, "512MB",
-                               "PG shared_buffers is 512MB (small plan)")
-                ecs = self.ssh.get_pg_setting(db_ip, db_container, "effective_cache_size")
-                s.assert_equal(ecs, "1536MB",
-                               "PG effective_cache_size is 1536MB (small plan)")
-                wm = self.ssh.get_pg_setting(db_ip, db_container, "work_mem")
-                s.assert_equal(wm, "5MB",
-                               "PG work_mem is 5MB (small plan)")
-                mwm = self.ssh.get_pg_setting(db_ip, db_container, "maintenance_work_mem")
-                s.assert_equal(mwm, "128MB",
-                               "PG maintenance_work_mem is 128MB (small plan)")
-                mc = self.ssh.get_pg_setting(db_ip, db_container, "max_connections")
-                s.assert_equal(mc, "100",
-                               "PG max_connections is 100 (small plan)")
-
-            # Snapshot policies: blob and db volumes should have policies
+            # Snapshot policies: web and db volumes should have policies
             network_name = make_network_name("e2etest")
-            blob_vol_id = output.get("blob_volume_id", "")
-            db_vol_id = output.get("db_volume_id", "")
-            if blob_vol_id:
-                s.assert_snapshot_policy(blob_vol_id, network_name,
-                                        "blob volume (initial)")
+            web_vol_id = output.get("web_volume_id", "")
+            db_vol_id = output.get("accessories", {}).get("db", {}).get("volume_id", "")
+            if web_vol_id:
+                s.assert_snapshot_policy(web_vol_id, network_name,
+                                        "web volume (initial)")
             if db_vol_id:
                 s.assert_snapshot_policy(db_vol_id, network_name,
                                         "db volume (initial)")
@@ -1191,7 +1264,7 @@ class E2ETestRunner:
             # Verify initial offerings are "small" before scale-up
             web_vm_id = output.get("web_vm_id", "")
             worker_vm_ids = output.get("worker_vm_ids", [])
-            db_vm_id = output.get("db_vm_id", "")
+            db_vm_id = output.get("accessories", {}).get("db", {}).get("vm_id", "")
 
             for label, vm_id in [("Web", web_vm_id),
                                  ("Worker-1", worker_vm_ids[0] if worker_vm_ids else ""),
@@ -1203,19 +1276,21 @@ class E2ETestRunner:
                                    f"{label} offering is 'small' before scale")
                     print(f"    {label}: offer used in next API call will be: medium")
 
+            # Update destination file for 3 workers (mirrors agent re-running
+            # generate_kamal_destination.py --workers 3)
+            self.prepare_deploy("e2etest", workers=3,
+                                domain=E2ETEST_DOMAIN, accessories=["db"])
+
             # Scale up: 3 workers, medium plans, larger disks
             output2 = trigger_deploy({
                 "zone": ZONE,
                 "env_name": "e2etest",
                 "web_plan": "medium",
-                "workers_enabled": "true",
                 "workers_replicas": "3",
                 "workers_plan": "medium",
-                "db_enabled": "true",
-                "db_plan": "medium",
-                "blob_disk_size_gb": "35",
-                "db_disk_size_gb": "30",
-            })
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":30}]',
+                "web_disk_size_gb": "35",
+            }, ref=self.branch)
 
             worker_ips2 = output2.get("worker_ips", [])
             s.assert_equal(len(worker_ips2), 3,
@@ -1249,42 +1324,43 @@ class E2ETestRunner:
             s.assert_true(
                 self.ssh.wait_for_ssh(web_ip2, timeout=60),
                 "SSH to web VM after scale: reachable")
-            blob_size2 = self.ssh.get_block_device_size(web_ip2, "/data/blobs")
-            s.assert_equal(blob_size2, 35 * 1024**3,
-                           "Blob disk grew to 35GB after scale")
+            web_size2 = self.ssh.get_block_device_size(web_ip2, "/data/")
+            s.assert_equal(web_size2, 35 * 1024**3,
+                           "Web disk grew to 35GB after scale")
 
-            db_ip2 = output2.get("db_ip", db_ip)
+            db_ip2 = output2.get("accessories", {}).get("db", {}).get("ip", "")
             if db_ip2:
                 s.assert_true(
                     self.ssh.wait_for_ssh(db_ip2, timeout=60),
                     "SSH to DB VM after scale: reachable")
-                db_size2 = self.ssh.get_block_device_size(db_ip2, "/data/db")
+                db_size2 = self.ssh.get_block_device_size(db_ip2, "/data/")
                 s.assert_equal(db_size2, 30 * 1024**3,
                                "DB disk grew to 30GB after scale")
 
-                # Verify PG tuning changed to 'medium' plan (4 GiB RAM)
-                db_container = f"{REPO_NAME}-db"
-                sb = self.ssh.get_pg_setting(db_ip2, db_container, "shared_buffers")
-                s.assert_equal(sb, "1GB",
-                               "PG shared_buffers is 1GB (medium plan)")
-                ecs = self.ssh.get_pg_setting(db_ip2, db_container, "effective_cache_size")
-                s.assert_equal(ecs, "3GB",
-                               "PG effective_cache_size is 3GB (medium plan)")
-                wm = self.ssh.get_pg_setting(db_ip2, db_container, "work_mem")
-                s.assert_equal(wm, "10MB",
-                               "PG work_mem is 10MB (medium plan)")
-                mwm = self.ssh.get_pg_setting(db_ip2, db_container, "maintenance_work_mem")
-                s.assert_equal(mwm, "256MB",
-                               "PG maintenance_work_mem is 256MB (medium plan)")
-                mc = self.ssh.get_pg_setting(db_ip2, db_container, "max_connections")
-                s.assert_equal(mc, "100",
-                               "PG max_connections is 100 (medium plan)")
+            # Update Route53 A record (IP may have changed after scale)
+            domain_ip = web_ip2
+            route53_upsert_a_record(E2ETEST_DOMAIN, web_ip2)
 
-            # App still works after scale
-            http2 = HTTPVerifier(web_ip2)
+            # App still works after scale via custom domain
+            http2 = HTTPVerifier(web_ip2, domain=E2ETEST_DOMAIN)
             s.assert_true(
                 http2.wait_for_healthy("/up", timeout=120),
-                "HTTP /up returns 200 (after scale up)")
+                "HTTPS /up returns 200 (after scale up via domain)")
+
+            # TLS: Verify certificate is valid and issued for the domain
+            cert = http2.get_certificate_info()
+            s.assert_true(cert is not None,
+                          "TLS certificate retrieved successfully")
+            if cert:
+                san = cert.get("subjectAltName", [])
+                san_names = [v for t, v in san if t == "DNS"]
+                s.assert_true(
+                    E2ETEST_DOMAIN in san_names,
+                    f"Certificate SAN contains {E2ETEST_DOMAIN}")
+                issuer = dict(x[0] for x in cert.get("issuer", []))
+                s.assert_equal(
+                    issuer.get("organizationName", ""), "Let's Encrypt",
+                    "Certificate issued by Let's Encrypt")
 
             # Unattended upgrades: defaults (reboot=true, time=05:00) on all VMs after scale
             all_ips_scaled = (
@@ -1303,6 +1379,10 @@ class E2ETestRunner:
             # Teardown
             trigger_teardown("e2etest")
 
+        # Clean up DNS record (outside with block so it runs even on failure)
+        if domain_ip:
+            route53_delete_a_record(E2ETEST_DOMAIN, domain_ip)
+
         self.scenarios.append(s)
 
     # ------------------------------------------------------------------
@@ -1312,14 +1392,17 @@ class E2ETestRunner:
     def _scenario_scale_down(self):
         s = TestScenario("Scale Down Workers (3 -> 1)")
         with s:
+            # Prepare destination file (3 workers + db)
+            self.prepare_deploy(DEFAULT_ENV_NAME, workers=3,
+                                accessories=["db"])
+
             # Deploy with 3 workers
             output = trigger_deploy({
                 "zone": ZONE,
                 "env_name": DEFAULT_ENV_NAME,
-                "workers_enabled": "true",
                 "workers_replicas": "3",
-                "db_enabled": "true",
-            })
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
+            }, ref=self.branch)
 
             web_ip = output.get("web_ip", "")
             worker_ips = output.get("worker_ips", [])
@@ -1327,13 +1410,13 @@ class E2ETestRunner:
             s.assert_equal(len(worker_ips), 3,
                            "Initial deploy has 3 workers")
 
-            # Snapshot policies: blob and db volumes should have policies
+            # Snapshot policies: web and db volumes should have policies
             network_name = make_network_name(DEFAULT_ENV_NAME)
-            blob_vol_id = output.get("blob_volume_id", "")
-            db_vol_id = output.get("db_volume_id", "")
-            if blob_vol_id:
-                s.assert_snapshot_policy(blob_vol_id, network_name,
-                                        "blob volume (initial)")
+            web_vol_id = output.get("web_volume_id", "")
+            db_vol_id = output.get("accessories", {}).get("db", {}).get("volume_id", "")
+            if web_vol_id:
+                s.assert_snapshot_policy(web_vol_id, network_name,
+                                        "web volume (initial)")
             if db_vol_id:
                 s.assert_snapshot_policy(db_vol_id, network_name,
                                         "db volume (initial)")
@@ -1351,14 +1434,17 @@ class E2ETestRunner:
                 s.assert_true(container,
                               f"Worker-{i} (initial): app container found")
 
+            # Update destination file for 1 worker
+            self.prepare_deploy(DEFAULT_ENV_NAME, workers=1,
+                                accessories=["db"])
+
             # Scale down to 1 worker
             output2 = trigger_deploy({
                 "zone": ZONE,
                 "env_name": DEFAULT_ENV_NAME,
-                "workers_enabled": "true",
                 "workers_replicas": "1",
-                "db_enabled": "true",
-            })
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
+            }, ref=self.branch)
 
             worker_ips2 = output2.get("worker_ips", [])
             s.assert_equal(len(worker_ips2), 1,
@@ -1398,15 +1484,18 @@ class E2ETestRunner:
         with s:
             network_name = make_network_name(DEFAULT_ENV_NAME)
 
+            # Prepare destination file (no workers, db only)
+            self.prepare_deploy(DEFAULT_ENV_NAME, accessories=["db"])
+
             # 1. Deploy to ZP01 with web + db (no workers)
             output = trigger_deploy({
                 "zone": "ZP01",
                 "env_name": DEFAULT_ENV_NAME,
-                "db_enabled": "true",
-            })
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
+            }, ref=self.branch)
 
             web_ip = output.get("web_ip", "")
-            db_ip = output.get("db_ip", "")
+            db_ip = output.get("accessories", {}).get("db", {}).get("ip", "")
             s.assert_true(web_ip, "Deploy produced web_ip")
             s.assert_true(db_ip, "Deploy produced db_ip")
 
@@ -1414,12 +1503,12 @@ class E2ETestRunner:
                 self.scenarios.append(s)
                 return
 
-            # 2. Assert snapshot policies exist on blob and db volumes
-            blob_vol_id = output.get("blob_volume_id", "")
-            db_vol_id = output.get("db_volume_id", "")
-            if blob_vol_id:
-                s.assert_snapshot_policy(blob_vol_id, network_name,
-                                        "blob volume")
+            # 2. Assert snapshot policies exist on web and db volumes
+            web_vol_id = output.get("web_volume_id", "")
+            db_vol_id = output.get("accessories", {}).get("db", {}).get("volume_id", "")
+            if web_vol_id:
+                s.assert_snapshot_policy(web_vol_id, network_name,
+                                        "web volume")
             if db_vol_id:
                 s.assert_snapshot_policy(db_vol_id, network_name,
                                         "db volume")
@@ -1456,33 +1545,33 @@ class E2ETestRunner:
             # conditions.
             print("  Waiting 60 s for natural disk flush...")
             time.sleep(60)
-            blob_snap_id = None
+            web_snap_id = None
             db_snap_id = None
-            if blob_vol_id:
-                blob_snap_id = create_tagged_snapshot(blob_vol_id, network_name)
-                s.assert_true(blob_snap_id,
-                              "Manual blob snapshot created")
+            if web_vol_id:
+                web_snap_id = create_tagged_snapshot(web_vol_id, network_name)
+                s.assert_true(web_snap_id,
+                              "Manual web snapshot created")
             if db_vol_id:
                 db_snap_id = create_tagged_snapshot(db_vol_id, network_name)
                 s.assert_true(db_snap_id,
                               "Manual db snapshot created")
 
             # 6. Wait for snapshots in both ZP01 and ZP02
-            blob_name = f"{network_name}-blob"
+            webdata_name = f"{network_name}-webdata"
             dbdata_name = f"{network_name}-dbdata"
 
             s.assert_true(
-                wait_for_snapshot_in_zone(blob_name, network_name, "ZP01",
+                wait_for_snapshot_in_zone(webdata_name, network_name, "ZP01",
                                          timeout=600),
-                "Blob snapshot ready in ZP01")
+                "Web snapshot ready in ZP01")
             s.assert_true(
                 wait_for_snapshot_in_zone(dbdata_name, network_name, "ZP01",
                                          timeout=600),
                 "DB snapshot ready in ZP01")
             s.assert_true(
-                wait_for_snapshot_in_zone(blob_name, network_name, "ZP02",
+                wait_for_snapshot_in_zone(webdata_name, network_name, "ZP02",
                                          timeout=900),
-                "Blob snapshot replicated to ZP02")
+                "Web snapshot replicated to ZP02")
             s.assert_true(
                 wait_for_snapshot_in_zone(dbdata_name, network_name, "ZP02",
                                          timeout=900),
@@ -1495,9 +1584,9 @@ class E2ETestRunner:
                 trigger_deploy({
                     "zone": "ZP01",
                     "env_name": DEFAULT_ENV_NAME,
-                    "db_enabled": "true",
+                    "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
                     "recover": "true",
-                })
+                }, ref=self.branch)
             except RuntimeError:
                 same_zone_failed = True
             s.assert_true(same_zone_failed,
@@ -1508,12 +1597,12 @@ class E2ETestRunner:
             output_r = trigger_deploy({
                 "zone": "ZP02",
                 "env_name": DEFAULT_ENV_NAME,
-                "db_enabled": "true",
+                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
                 "recover": "true",
-            })
+            }, ref=self.branch)
 
             web_ip_r = output_r.get("web_ip", "")
-            db_ip_r = output_r.get("db_ip", "")
+            db_ip_r = output_r.get("accessories", {}).get("db", {}).get("ip", "")
             s.assert_true(web_ip_r, "Recovery produced web_ip")
             s.assert_true(db_ip_r, "Recovery produced db_ip")
 
@@ -1541,11 +1630,11 @@ class E2ETestRunner:
                               "Uploaded file survived recovery")
 
             # 11. Assert recovered app has snapshot policies
-            blob_vol_id_r = output_r.get("blob_volume_id", "")
-            db_vol_id_r = output_r.get("db_volume_id", "")
-            if blob_vol_id_r:
-                s.assert_snapshot_policy(blob_vol_id_r, network_name,
-                                        "recovered blob volume")
+            web_vol_id_r = output_r.get("web_volume_id", "")
+            db_vol_id_r = output_r.get("accessories", {}).get("db", {}).get("volume_id", "")
+            if web_vol_id_r:
+                s.assert_snapshot_policy(web_vol_id_r, network_name,
+                                        "recovered web volume")
             if db_vol_id_r:
                 s.assert_snapshot_policy(db_vol_id_r, network_name,
                                         "recovered db volume")

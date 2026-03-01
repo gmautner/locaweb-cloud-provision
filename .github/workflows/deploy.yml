@@ -2,15 +2,15 @@
 #
 # Provisions CloudStack infrastructure and deploys with Kamal.
 #
-# Required GitHub Secrets:
+# Required GitHub Secrets (infrastructure):
 #   CLOUDSTACK_API_KEY    - CloudStack API key
 #   CLOUDSTACK_SECRET_KEY - CloudStack secret key
 #   SSH_PRIVATE_KEY       - SSH private key for VM access
-#   POSTGRES_PASSWORD     - PostgreSQL password (if db_enabled)
 #
-# Optional custom container env vars (dotenv format):
-#   SECRET_ENV_VARS (secret)   - key=value pairs passed as secret env vars to the container
-#   ENV_VARS (variable)    - key=value pairs passed as clear env vars to the container
+# Required GitHub Secrets (application — set in the caller repo):
+#   App secrets (POSTGRES_PASSWORD, DATABASE_URL, etc.) are GitHub Secrets
+#   in the caller repo. Kamal picks them up via .kamal/secrets references.
+#   The workflow exports SECRET_ENV_VARS entries as shell env vars for Kamal.
 #
 # Note: GITHUB_TOKEN is used for ghcr.io registry access (no separate REGISTRY_TOKEN needed).
 
@@ -38,10 +38,6 @@ on:
         options:
           - ZP01
           - ZP02
-      domain:
-        description: "Custom domain (optional). TLS is always enabled via Let's Encrypt."
-        required: false
-        default: ""
       web_plan:
         description: "Web VM plan"
         type: choice
@@ -54,22 +50,14 @@ on:
           - xlarge
           - 2xlarge
           - 4xlarge
-      blob_disk_size_gb:
-        description: "Web blob disk size in GB"
+      web_disk_size_gb:
+        description: "Web data disk size in GB"
         type: number
         default: 20
-      workers_enabled:
-        description: "Enable worker VMs"
-        type: boolean
-        default: false
       workers_replicas:
-        description: "Number of worker replicas"
+        description: "Number of worker replicas (0 = no workers)"
         type: number
-        default: 1
-      workers_cmd:
-        description: "Command for worker containers"
-        required: false
-        default: "sleep infinity"
+        default: 0
       workers_plan:
         description: "Worker VM plan"
         type: choice
@@ -82,26 +70,10 @@ on:
           - xlarge
           - 2xlarge
           - 4xlarge
-      db_enabled:
-        description: "Enable database VM"
-        type: boolean
-        default: false
-      db_plan:
-        description: "Database VM plan"
-        type: choice
-        default: "medium"
-        options:
-          - micro
-          - small
-          - medium
-          - large
-          - xlarge
-          - 2xlarge
-          - 4xlarge
-      db_disk_size_gb:
-        description: "Database disk size in GB"
-        type: number
-        default: 20
+      accessories:
+        description: "Accessory VMs (JSON array: [{name, plan, disk_size_gb}])"
+        required: false
+        default: "[]"
       automatic_reboot:
         description: "Enable automatic reboot after unattended upgrades"
         type: boolean
@@ -123,36 +95,21 @@ on:
       zone:
         type: string
         default: "ZP01"
-      domain:
-        type: string
-        default: ""
       web_plan:
         type: string
         default: "small"
-      blob_disk_size_gb:
+      web_disk_size_gb:
         type: number
         default: 20
-      workers_enabled:
-        type: boolean
-        default: false
       workers_replicas:
         type: number
-        default: 1
-      workers_cmd:
-        type: string
-        default: "sleep infinity"
+        default: 0
       workers_plan:
         type: string
         default: "small"
-      db_enabled:
-        type: boolean
-        default: false
-      db_plan:
+      accessories:
         type: string
-        default: "medium"
-      db_disk_size_gb:
-        type: number
-        default: 20
+        default: "[]"
       automatic_reboot:
         type: boolean
         default: true
@@ -162,10 +119,6 @@ on:
       automatic_reboot_time_utc:
         type: string
         default: "05:00"
-      env_vars:
-        type: string
-        default: ""
-        description: "Dotenv-formatted key=value pairs for clear container env vars"
     secrets:
       CLOUDSTACK_API_KEY:
         required: true
@@ -173,8 +126,6 @@ on:
         required: true
       SSH_PRIVATE_KEY:
         required: true
-      POSTGRES_PASSWORD:
-        required: false
       SECRET_ENV_VARS:
         required: false
     outputs:
@@ -184,12 +135,9 @@ on:
       worker_ips:
         description: "Worker VM public IPs (JSON array)"
         value: ${{ jobs.deploy.outputs.worker_ips }}
-      db_ip:
-        description: "Database VM public IP"
-        value: ${{ jobs.deploy.outputs.db_ip }}
-      db_internal_ip:
-        description: "Database VM internal IP"
-        value: ${{ jobs.deploy.outputs.db_internal_ip }}
+      accessory_ips:
+        description: "Accessory VM public IPs (JSON object)"
+        value: ${{ jobs.deploy.outputs.accessory_ips }}
 
 jobs:
   deploy:
@@ -197,22 +145,9 @@ jobs:
     outputs:
       web_ip: ${{ steps.outputs.outputs.web_ip }}
       worker_ips: ${{ steps.outputs.outputs.worker_ips }}
-      db_ip: ${{ steps.outputs.outputs.db_ip }}
-      db_internal_ip: ${{ steps.outputs.outputs.db_internal_ip }}
+      accessory_ips: ${{ steps.outputs.outputs.accessory_ips }}
 
     steps:
-      - name: Validate secrets
-        if: inputs.db_enabled
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-        run: |
-          missing=()
-          [ -z "$POSTGRES_PASSWORD" ] && missing+=("POSTGRES_PASSWORD")
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::db_enabled is true but required secrets are missing: ${missing[*]}"
-            exit 1
-          fi
-
       - name: Checkout application repository
         uses: actions/checkout@v4
 
@@ -242,15 +177,11 @@ jobs:
         if: steps.infra-cache.outputs.cache-hit != 'true'
         env:
           INPUT_ZONE: ${{ inputs.zone }}
-          INPUT_DOMAIN: ${{ inputs.domain }}
           INPUT_WEB_PLAN: ${{ inputs.web_plan }}
-          INPUT_BLOB_DISK_SIZE_GB: ${{ inputs.blob_disk_size_gb }}
-          INPUT_WORKERS_ENABLED: ${{ inputs.workers_enabled }}
+          INPUT_WEB_DISK_SIZE_GB: ${{ inputs.web_disk_size_gb }}
           INPUT_WORKERS_REPLICAS: ${{ inputs.workers_replicas }}
           INPUT_WORKERS_PLAN: ${{ inputs.workers_plan }}
-          INPUT_DB_ENABLED: ${{ inputs.db_enabled }}
-          INPUT_DB_PLAN: ${{ inputs.db_plan }}
-          INPUT_DB_DISK_SIZE_GB: ${{ inputs.db_disk_size_gb }}
+          INPUT_ACCESSORIES: ${{ inputs.accessories }}
           INPUT_RECOVER: ${{ inputs.recover }}
         run: python3 _infra/scripts/build_config.py
 
@@ -303,12 +234,13 @@ jobs:
           python3 << 'PYEOF'
           import json, os
           d = json.load(open('/tmp/provision-output.json'))
+          accessories = d.get('accessories', {})
+          # Build accessory IPs JSON
+          acc_ips = {name: data.get('ip', '') for name, data in accessories.items()}
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"web_ip={d.get('web_ip', '')}\n")
               f.write(f"worker_ips={json.dumps(d.get('worker_ips', []))}\n")
-              f.write(f"db_ip={d.get('db_ip', '')}\n")
-              f.write(f"db_internal_ip={d.get('db_internal_ip', '')}\n")
-              f.write(f"db_vm_scaled={json.dumps(d.get('db_vm_scaled', False))}\n")
+              f.write(f"accessory_ips={json.dumps(acc_ips)}\n")
           PYEOF
 
       - name: Upload provisioning output
@@ -330,8 +262,8 @@ jobs:
           print(f'| Web | {d.get("web_ip", "N/A")} |')
           for i, ip in enumerate(d.get("worker_ips", []), 1):
               print(f'| Worker {i} | {ip} |')
-          if d.get("db_ip"):
-              print(f'| Database | {d["db_ip"]} |')
+          for name, data in d.get("accessories", {}).items():
+              print(f'| {name} | {data.get("ip", "N/A")} |')
           PYEOF
 
       - name: Configure unattended upgrades
@@ -368,27 +300,6 @@ jobs:
           cp /tmp/ssh_key .kamal/ssh_key
           chmod 600 .kamal/ssh_key
 
-      - name: Create Kamal secrets and env vars
-        env:
-          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS }}
-          ENV_VARS: ${{ inputs.env_vars || vars.ENV_VARS }}
-          INPUT_DB_ENABLED: ${{ inputs.db_enabled }}
-        run: |
-          pip install -q python-dotenv
-          python3 _infra/scripts/create_kamal_secrets.py
-
-      - name: Generate Kamal deploy config
-        env:
-          INPUT_WORKERS_ENABLED: ${{ inputs.workers_enabled }}
-          INPUT_WORKERS_CMD: ${{ inputs.workers_cmd }}
-          INPUT_DB_ENABLED: ${{ inputs.db_enabled }}
-          INPUT_DB_PLAN: ${{ inputs.db_plan }}
-          INPUT_DOMAIN: ${{ inputs.domain }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          REPO_FULL: ${{ github.repository }}
-          REPO_OWNER: ${{ github.repository_owner }}
-        run: python3 _infra/scripts/generate_kamal_config.py
-
       - name: Expose GitHub Actions runtime for Docker cache
         uses: actions/github-script@v7
         with:
@@ -407,59 +318,93 @@ jobs:
 
       - name: Deploy with Kamal
         env:
+          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_HOST: ${{ steps.outputs.outputs.db_internal_ip }}
           INFRA_CACHE_HIT: ${{ steps.infra-cache.outputs.cache-hit }}
         run: |
-          export DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/postgres"
-          source /tmp/kamal_custom_secrets.env
+          pip install -q python-dotenv
+
+          # Export app secrets from SECRET_ENV_VARS using python-dotenv
+          eval "$(python3 -c "
+          from dotenv import dotenv_values
+          from io import StringIO
+          import os, shlex
+          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
+              print(f'export {k}={shlex.quote(v)}')
+          ")"
+
+          # Infrastructure bindings (for Kamal ERB in destination file)
+          export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
+          for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
+            export "INFRA_${name^^}_IP"=$(jq -r ".accessories.${name}.ip" /tmp/provision-output.json)
+          done
+          for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
+            export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
+          done
+
+          # Repo identity (for Kamal ERB in destination file)
+          export REPO_NAME=${{ github.event.repository.name }}
+          export REPO_FULL=${{ github.repository }}
+          export REPO_OWNER=${{ github.repository_owner }}
+
           if [ "$INFRA_CACHE_HIT" = "true" ]; then
             echo "Infrastructure cached — running kamal deploy"
-            kamal deploy
+            kamal deploy -d ${{ inputs.env_name || 'preview' }}
           else
             echo "Fresh infrastructure — running kamal setup"
-            kamal setup
+            kamal setup -d ${{ inputs.env_name || 'preview' }}
           fi
 
-      - name: Reboot DB accessory if plan changed
-        if: inputs.db_enabled && steps.outputs.outputs.db_vm_scaled == 'true'
+      - name: Reboot accessories if plan changed
         env:
+          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_HOST: ${{ steps.outputs.outputs.db_internal_ip }}
         run: |
-          export DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@$POSTGRES_HOST:5432/postgres"
-          source /tmp/kamal_custom_secrets.env
-          echo "DB plan changed (VM was rescaled), rebooting DB accessory..."
-          kamal accessory reboot db
+          pip install -q python-dotenv
+
+          # Export app secrets
+          eval "$(python3 -c "
+          from dotenv import dotenv_values
+          from io import StringIO
+          import os, shlex
+          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
+              print(f'export {k}={shlex.quote(v)}')
+          ")"
+
+          # Infrastructure bindings
+          export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
+          for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
+            export "INFRA_${name^^}_IP"=$(jq -r ".accessories.${name}.ip" /tmp/provision-output.json)
+          done
+          for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
+            export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
+          done
+
+          export REPO_NAME=${{ github.event.repository.name }}
+          export REPO_FULL=${{ github.repository }}
+          export REPO_OWNER=${{ github.repository_owner }}
+
+          # Reboot accessories whose VMs were rescaled
+          for name in $(jq -r '.accessories | to_entries[] | select(.value.vm_scaled) | .key' /tmp/provision-output.json 2>/dev/null); do
+            echo "Accessory '$name' VM was rescaled, rebooting..."
+            kamal accessory reboot $name -d ${{ inputs.env_name || 'preview' }}
+          done
 
       - name: Print Kamal deployment summary
-        env:
-          INPUT_DOMAIN: ${{ inputs.domain }}
         run: |
           python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY
           import json, os
           d = json.load(open('/tmp/provision-output.json'))
           web_ip = d.get('web_ip', 'N/A')
-          domain = os.environ.get('INPUT_DOMAIN', '').strip()
           sha = os.environ.get('GITHUB_SHA', 'unknown')[:7]
           repo = os.environ.get('GITHUB_REPOSITORY', '')
-          if domain:
-              url = f'https://{domain}'
-              health = f'https://{domain}/up'
-          else:
-              url = f'https://{web_ip}.nip.io'
-              health = f'https://{web_ip}.nip.io/up'
           print('')
           print('## Kamal Deployment Complete')
           print('')
           print(f'- **Commit:** `{sha}`')
           print(f'- **Image:** `ghcr.io/{repo}:{sha}`')
-          print(f'- **URL:** {url}')
-          print(f'- **Health check:** {health}')
+          print(f'- **Web IP:** `{web_ip}`')
           print(f'- **TLS:** Let\'s Encrypt (automatic)')
-          if domain:
-              print(f'- **Domain:** `{domain}`')
-              print(f'- **Public IP:** `{web_ip}` (point DNS A record here)')
+          print('')
+          print('The app URL depends on the `proxy.host` in your Kamal config (nip.io or custom domain).')
           PYEOF

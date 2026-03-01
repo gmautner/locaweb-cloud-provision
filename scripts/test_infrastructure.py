@@ -163,7 +163,7 @@ class InfrastructureVerifier:
         count = 0
         i = 1
         while True:
-            name = f"{self.network_name}-worker-{i}"
+            name = f"worker-{i}"
             if self.verify_vm_exists(name):
                 count += 1
                 i += 1
@@ -491,15 +491,13 @@ class TestRunner:
         with s:
             output = self.provision({
                 "zone": ZONE,
-                "domain": "",
                 "web_plan": "small",
-                "blob_disk_size_gb": 30,
-                "workers_enabled": True,
+                "web_disk_size_gb": 30,
                 "workers_replicas": 3,
                 "workers_plan": "small",
-                "db_enabled": True,
-                "db_plan": "medium",
-                "db_disk_size_gb": 25,
+                "accessories": [
+                    {"name": "db", "plan": "medium", "disk_size_gb": 25},
+                ],
             })
 
             # --- Network & keypair ---
@@ -509,7 +507,7 @@ class TestRunner:
                           "SSH keypair exists")
 
             # --- Web VM ---
-            web = self.verifier.verify_vm_exists(f"{NETWORK_NAME}-web")
+            web = self.verifier.verify_vm_exists("web")
             s.assert_true(web is not None, "Web VM exists")
             if web:
                 s.assert_equal(web.get("state"), "Running",
@@ -517,7 +515,7 @@ class TestRunner:
 
             # --- Workers 1-3 ---
             for i in range(1, 4):
-                name = f"{NETWORK_NAME}-worker-{i}"
+                name = f"worker-{i}"
                 vm = self.verifier.verify_vm_exists(name)
                 s.assert_true(vm is not None, f"Worker-{i} VM exists")
                 if vm:
@@ -527,20 +525,20 @@ class TestRunner:
                            "Worker count is 3")
 
             # --- DB VM ---
-            db = self.verifier.verify_vm_exists(f"{NETWORK_NAME}-db")
+            db = self.verifier.verify_vm_exists("db")
             s.assert_true(db is not None, "DB VM exists")
             if db:
                 s.assert_equal(db.get("state"), "Running",
                                "DB VM is Running")
 
             # --- Volumes ---
-            blob_name = f"{NETWORK_NAME}-blob"
+            web_vol_name = f"{NETWORK_NAME}-webdata"
             s.assert_true(
-                self.verifier.verify_volume_exists(blob_name) is not None,
-                "Blob volume exists")
+                self.verifier.verify_volume_exists(web_vol_name) is not None,
+                "Web volume exists")
             s.assert_true(
-                self.verifier.verify_volume_tags(blob_name),
-                "Blob volume has correct tag")
+                self.verifier.verify_volume_tags(web_vol_name),
+                "Web volume has correct tag")
 
             db_vol_name = f"{NETWORK_NAME}-dbdata"
             s.assert_true(
@@ -552,10 +550,11 @@ class TestRunner:
 
             # --- Snapshot policies ---
             s.assert_true(
-                self.verifier.verify_snapshot_policy(output["blob_volume_id"]),
-                "Blob snapshot policy exists")
+                self.verifier.verify_snapshot_policy(output["web_volume_id"]),
+                "Web snapshot policy exists")
             s.assert_true(
-                self.verifier.verify_snapshot_policy(output["db_volume_id"]),
+                self.verifier.verify_snapshot_policy(
+                    output["accessories"]["db"]["volume_id"]),
                 "DB snapshot policy exists")
 
             # --- Public IPs ---
@@ -569,7 +568,7 @@ class TestRunner:
                 "Web firewall: ports 22, 80, 443")
             s.assert_true(
                 self.verifier.verify_firewall_rules(
-                    output["db_ip_id"], [22]),
+                    output["accessories"]["db"]["ip_id"], [22]),
                 "DB firewall: port 22")
 
             net_id = output["network_id"]
@@ -589,7 +588,8 @@ class TestRunner:
                 "Web IP static NAT -> web VM")
             s.assert_true(
                 self.verifier.verify_static_nat(
-                    output["db_ip_id"], output["db_vm_id"]),
+                    output["accessories"]["db"]["ip_id"],
+                    output["accessories"]["db"]["vm_id"]),
                 "DB IP static NAT -> DB VM")
 
             # --- SSH verification ---
@@ -598,16 +598,16 @@ class TestRunner:
                 self.ssh.wait_for_ssh(web_ip, timeout=180),
                 "SSH to web VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(web_ip, "/data/blobs", timeout=120),
-                "SSH to web VM: /data/blobs mounted")
+                self.ssh.verify_mount_point(web_ip, "/data/", timeout=120),
+                "SSH to web VM: /data/ mounted")
 
-            db_ip = output["db_ip"]
+            db_ip = output["accessories"]["db"]["ip"]
             s.assert_true(
                 self.ssh.wait_for_ssh(db_ip, timeout=180),
                 "SSH to DB VM: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(db_ip, "/data/db", timeout=120),
-                "SSH to DB VM: /data/db mounted")
+                self.ssh.verify_mount_point(db_ip, "/data/", timeout=120),
+                "SSH to DB VM: /data/ mounted")
 
             for i, wip_addr in enumerate(output.get("worker_ips", []), 1):
                 s.assert_true(
@@ -617,14 +617,20 @@ class TestRunner:
             # --- Output JSON fields ---
             s.assert_true("web_vm_id" in output, "Output has web_vm_id")
             s.assert_true("web_ip" in output, "Output has web_ip")
-            s.assert_true("blob_volume_id" in output,
-                          "Output has blob_volume_id")
+            s.assert_true("web_volume_id" in output,
+                          "Output has web_volume_id")
             s.assert_equal(len(output.get("worker_vm_ids", [])), 3,
                            "Output has 3 worker_vm_ids")
-            s.assert_true("db_vm_id" in output, "Output has db_vm_id")
-            s.assert_true("db_volume_id" in output,
-                          "Output has db_volume_id")
-            s.assert_true("db_ip" in output, "Output has db_ip")
+            s.assert_true("accessories" in output,
+                          "Output has accessories")
+            s.assert_true("db" in output.get("accessories", {}),
+                          "Output accessories has db")
+            s.assert_true("vm_id" in output.get("accessories", {}).get("db", {}),
+                          "Output accessories.db has vm_id")
+            s.assert_true("volume_id" in output.get("accessories", {}).get("db", {}),
+                          "Output accessories.db has volume_id")
+            s.assert_true("ip" in output.get("accessories", {}).get("db", {}),
+                          "Output accessories.db has ip")
 
         self.scenarios.append(s)
 
@@ -633,37 +639,35 @@ class TestRunner:
         with s:
             self.provision({
                 "zone": ZONE,
-                "domain": "",
                 "web_plan": "small",
-                "blob_disk_size_gb": 30,
-                "workers_enabled": True,
+                "web_disk_size_gb": 30,
                 "workers_replicas": 1,
                 "workers_plan": "small",
-                "db_enabled": True,
-                "db_plan": "medium",
-                "db_disk_size_gb": 25,
+                "accessories": [
+                    {"name": "db", "plan": "medium", "disk_size_gb": 25},
+                ],
             })
 
             s.assert_true(
                 self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-worker-1") is not None,
+                    f"worker-1") is not None,
                 "Worker-1 still exists")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-worker-2"),
+                self.verifier.verify_vm_absent(f"worker-2"),
                 "Worker-2 gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-worker-3"),
+                self.verifier.verify_vm_absent(f"worker-3"),
                 "Worker-3 gone")
             s.assert_equal(self.verifier.count_worker_vms(), 1,
                            "Worker count is 1")
 
             s.assert_true(
                 self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-web") is not None,
+                    "web") is not None,
                 "Web VM unaffected")
             s.assert_true(
                 self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-db") is not None,
+                    "db") is not None,
                 "DB VM unaffected")
 
             s.assert_equal(self.verifier.count_non_sourcenat_ips(), 3,
@@ -681,17 +685,17 @@ class TestRunner:
             s.assert_true(self.verifier.verify_keypair_absent(),
                           "Keypair gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-web"),
+                self.verifier.verify_vm_absent("web"),
                 "Web VM gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-db"),
+                self.verifier.verify_vm_absent("db"),
                 "DB VM gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-worker-1"),
+                self.verifier.verify_vm_absent(f"worker-1"),
                 "Worker-1 VM gone")
             s.assert_true(
-                self.verifier.verify_volume_absent(f"{NETWORK_NAME}-blob"),
-                "Blob volume gone")
+                self.verifier.verify_volume_absent(f"{NETWORK_NAME}-webdata"),
+                "Web volume gone")
             s.assert_true(
                 self.verifier.verify_volume_absent(f"{NETWORK_NAME}-dbdata"),
                 "DB volume gone")
@@ -701,7 +705,7 @@ class TestRunner:
         self.scenarios.append(s)
 
     # ------------------------------------------------------------------
-    # Phase 2: Web-only deploy (workers and db disabled)
+    # Phase 2: Web-only deploy (no workers, no accessories)
     # ------------------------------------------------------------------
 
     def _phase2_web_only_deploy(self):
@@ -709,31 +713,27 @@ class TestRunner:
         with s:
             output = self.provision({
                 "zone": ZONE,
-                "domain": "",
                 "web_plan": "small",
-                "blob_disk_size_gb": 20,
-                "workers_enabled": False,
-                "workers_replicas": 1,
+                "web_disk_size_gb": 20,
+                "workers_replicas": 0,
                 "workers_plan": "small",
-                "db_enabled": False,
-                "db_plan": "medium",
-                "db_disk_size_gb": 20,
+                "accessories": [],
             })
 
             s.assert_true(
                 self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-web") is not None,
+                    "web") is not None,
                 "Web VM exists")
             s.assert_equal(self.verifier.count_worker_vms(), 0,
                            "Zero workers")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-db"),
+                self.verifier.verify_vm_absent("db"),
                 "No DB VM")
 
             s.assert_true(
                 self.verifier.verify_volume_exists(
-                    f"{NETWORK_NAME}-blob") is not None,
-                "Blob volume exists")
+                    f"{NETWORK_NAME}-webdata") is not None,
+                "Web volume exists")
             s.assert_true(
                 self.verifier.verify_volume_absent(f"{NETWORK_NAME}-dbdata"),
                 "No DB volume")
@@ -747,16 +747,16 @@ class TestRunner:
                 self.ssh.wait_for_ssh(web_ip, timeout=180),
                 "SSH to web: reachable")
             s.assert_true(
-                self.ssh.verify_mount_point(web_ip, "/data/blobs", timeout=120),
-                "SSH to web: /data/blobs mounted")
+                self.ssh.verify_mount_point(web_ip, "/data/", timeout=120),
+                "SSH to web: /data/ mounted")
 
             # Output JSON
             s.assert_true("worker_vm_ids" not in output,
                           "Output has no worker_vm_ids")
-            s.assert_true("db_vm_id" not in output,
-                          "Output has no db_vm_id")
-            s.assert_true("db_volume_id" not in output,
-                          "Output has no db_volume_id")
+            accessories = output.get("accessories", {})
+            s.assert_true(
+                not accessories,
+                "Output has no accessories (empty or absent)")
 
         self.scenarios.append(s)
 
@@ -770,11 +770,11 @@ class TestRunner:
             s.assert_true(self.verifier.verify_keypair_absent(),
                           "Keypair gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-web"),
+                self.verifier.verify_vm_absent("web"),
                 "Web VM gone")
             s.assert_true(
-                self.verifier.verify_volume_absent(f"{NETWORK_NAME}-blob"),
-                "Blob volume gone")
+                self.verifier.verify_volume_absent(f"{NETWORK_NAME}-webdata"),
+                "Web volume gone")
             s.assert_true(self.verifier.verify_no_tagged_volumes(),
                           "No tagged volumes remain")
 
@@ -789,22 +789,20 @@ class TestRunner:
         with s:
             self.provision({
                 "zone": ZONE,
-                "domain": "",
                 "web_plan": "small",
-                "blob_disk_size_gb": 20,
-                "workers_enabled": True,
+                "web_disk_size_gb": 20,
                 "workers_replicas": 1,
                 "workers_plan": "small",
-                "db_enabled": True,
-                "db_plan": "small",
-                "db_disk_size_gb": 20,
+                "accessories": [
+                    {"name": "db", "plan": "small", "disk_size_gb": 20},
+                ],
             })
 
             s.assert_equal(self.verifier.count_worker_vms(), 1,
                            "1 worker (default replicas)")
             s.assert_true(
                 self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-db") is not None,
+                    "db") is not None,
                 "DB VM exists")
             s.assert_true(
                 self.verifier.verify_volume_exists(
@@ -820,21 +818,21 @@ class TestRunner:
             if small_id:
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-web", small_id),
+                        "web", small_id),
                     "Web VM has 'small' offering")
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-worker-1", small_id),
+                        f"worker-1", small_id),
                     "Worker-1 has 'small' offering")
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-db", small_id),
+                        "db", small_id),
                     "DB VM has 'small' offering")
 
             # Verify initial disk sizes
             s.assert_equal(
-                self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-blob"),
-                20, "Blob volume is 20GB")
+                self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-webdata"),
+                20, "Web volume is 20GB")
             s.assert_equal(
                 self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-dbdata"),
                 20, "DB volume is 20GB")
@@ -846,20 +844,18 @@ class TestRunner:
         with s:
             self.provision({
                 "zone": ZONE,
-                "domain": "",
                 "web_plan": "medium",
-                "blob_disk_size_gb": 30,
-                "workers_enabled": True,
+                "web_disk_size_gb": 30,
                 "workers_replicas": 3,
                 "workers_plan": "medium",
-                "db_enabled": True,
-                "db_plan": "medium",
-                "db_disk_size_gb": 25,
+                "accessories": [
+                    {"name": "db", "plan": "medium", "disk_size_gb": 25},
+                ],
             })
 
             for i in range(1, 4):
                 vm = self.verifier.verify_vm_exists(
-                    f"{NETWORK_NAME}-worker-{i}")
+                    f"worker-{i}")
                 s.assert_true(vm is not None, f"Worker-{i} exists")
                 if vm:
                     s.assert_equal(vm.get("state"), "Running",
@@ -876,30 +872,30 @@ class TestRunner:
             if medium_id:
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-web", medium_id),
+                        "web", medium_id),
                     "Web VM scaled to 'medium' offering")
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-worker-1", medium_id),
+                        f"worker-1", medium_id),
                     "Worker-1 scaled to 'medium' offering")
                 s.assert_true(
                     self.verifier.verify_vm_offering(
-                        f"{NETWORK_NAME}-db", medium_id),
+                        "db", medium_id),
                     "DB VM scaled to 'medium' offering")
 
             # Verify disk sizes grew
             s.assert_equal(
-                self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-blob"),
-                30, "Blob volume grew to 30GB")
+                self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-webdata"),
+                30, "Web volume grew to 30GB")
             s.assert_equal(
                 self.verifier.get_volume_size_gb(f"{NETWORK_NAME}-dbdata"),
                 25, "DB volume grew to 25GB")
 
             # Verify all VMs are Running after scale
-            web = self.verifier.verify_vm_exists(f"{NETWORK_NAME}-web")
+            web = self.verifier.verify_vm_exists("web")
             s.assert_true(web is not None and web.get("state") == "Running",
                           "Web VM is Running after scale")
-            db = self.verifier.verify_vm_exists(f"{NETWORK_NAME}-db")
+            db = self.verifier.verify_vm_exists("db")
             s.assert_true(db is not None and db.get("state") == "Running",
                           "DB VM is Running after scale")
 
@@ -915,13 +911,13 @@ class TestRunner:
             s.assert_true(self.verifier.verify_keypair_absent(),
                           "Keypair gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-web"),
+                self.verifier.verify_vm_absent("web"),
                 "Web VM gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-db"),
+                self.verifier.verify_vm_absent("db"),
                 "DB VM gone")
             s.assert_true(
-                self.verifier.verify_vm_absent(f"{NETWORK_NAME}-worker-1"),
+                self.verifier.verify_vm_absent(f"worker-1"),
                 "Worker-1 VM gone")
             s.assert_true(self.verifier.verify_no_tagged_volumes(),
                           "No tagged volumes remain")

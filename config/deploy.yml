@@ -1,0 +1,39 @@
+proxy:
+  app_port: 80
+  ssl: true
+  forward_headers: false
+  healthcheck:
+    path: /up
+    interval: 3
+    timeout: 5
+
+env:
+  clear:
+    BLOB_STORAGE_PATH: /data/blobs
+    MY_VAR: hello-from-e2e
+  secret:
+    - POSTGRES_PASSWORD
+    - DATABASE_URL
+    - MY_SECRET
+
+servers:
+  workers:
+    cmd: gunicorn --bind 0.0.0.0:80 --workers 2 app:app
+
+volumes:
+  - /data/blobs:/data/blobs
+
+readiness_delay: 15
+deploy_timeout: 180
+drain_timeout: 30
+
+accessories:
+  db:
+    image: supabase/postgres:17.6.1.087
+    port: "5432:5432"
+    cmd: "postgres -D /etc/postgresql -c shared_buffers=1GB -c effective_cache_size=3GB -c work_mem=10MB -c maintenance_work_mem=256MB -c max_connections=100"
+    env:
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - /data/pgdata:/var/lib/postgresql/data

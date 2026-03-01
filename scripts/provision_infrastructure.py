@@ -3,12 +3,12 @@
 Infrastructure provisioning script for Locaweb CloudStack deployment.
 
 Creates CloudStack resources based on a validated JSON configuration:
-- Isolated network with SSH key pair
-- Web VM (always) with blob data disk
+- Isolated network with SSH key pair and networkdomain for DNS resolution
+- Web VM (always) with data disk
 - Worker VMs (optional, N replicas, stateless — no data disks)
-- Database VM (optional) with database data disk
+- Accessory VMs (generic — one per entry in accessories list) with data disks
 - Public IPs with static NAT (1:1 mapping per VM)
-- Firewall rules (SSH+HTTP+HTTPS for web; SSH only for workers and db)
+- Firewall rules (SSH+HTTP+HTTPS for web; SSH only for workers and accessories)
 - Daily snapshot policies for data disks
 
 The script is idempotent — running it twice will skip existing resources.
@@ -43,7 +43,7 @@ SNAPSHOT_TIMEZONE = "Etc/UTC"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_USERDATA = os.path.join(SCRIPT_DIR, "userdata", "web_vm.sh")
 WORKER_USERDATA = os.path.join(SCRIPT_DIR, "userdata", "worker_vm.sh")
-DB_USERDATA = os.path.join(SCRIPT_DIR, "userdata", "db_vm.sh")
+ACCESSORY_USERDATA = os.path.join(SCRIPT_DIR, "userdata", "accessory_vm.sh")
 
 # ---------------------------------------------------------------------------
 # CloudMonkey helpers
@@ -168,12 +168,14 @@ def find_keypair(name):
     return bool(data and data.get("sshkeypair"))
 
 
-def find_vm(name, zone_id=None):
+def find_vm(name, zone_id=None, network_id=None):
     """Find existing VM by name, return dict or None."""
     cmd = ["list", "virtualmachines", f"name={name}",
            "filter=id,name,state,serviceofferingid"]
     if zone_id:
         cmd.append(f"zoneid={zone_id}")
+    if network_id:
+        cmd.append(f"networkid={network_id}")
     data = cmk_quiet(*cmd)
     if data:
         for vm in data.get("virtualmachine", []):
@@ -250,7 +252,7 @@ def deploy_vm(name, offering_id, template_id, zone_id, net_id, keypair_name,
     If userdata_path is provided and the file exists, the script is
     base64-encoded and passed as cloud-init userdata during deployment.
     """
-    vm = find_vm(name, zone_id=zone_id)
+    vm = find_vm(name, zone_id=zone_id, network_id=net_id)
     if vm:
         vm_id = vm["id"]
         current_offering = vm.get("serviceofferingid", "")
@@ -374,12 +376,12 @@ def create_snapshot_policy(vol_id, network_name, snapshot_zoneids, desc):
         print(f"  {desc}: daily snapshot policy created")
 
 
-def find_latest_snapshots(network_name, zone_id, db_enabled):
-    """Find the latest snapshots for blob (and optionally dbdata) volumes.
+def find_latest_snapshots(network_name, zone_id, accessory_names):
+    """Find the latest snapshots for web and accessory volumes.
 
     Looks for snapshots in the given zone whose volume name matches
-    {network_name}-blob and {network_name}-dbdata.  Returns the most
-    recent snapshot of each type, keyed by "blob" and "dbdata".
+    {network_name}-webdata and {network_name}-{name}data.  Returns the
+    most recent snapshot of each type.
     """
     data = cmk("list", "snapshots", f"zoneid={zone_id}",
                "filter=id,name,volumename,created,state",
@@ -396,34 +398,35 @@ def find_latest_snapshots(network_name, zone_id, db_enabled):
                 f"tags[0].value={network_name}")
     snapshots.extend(data2.get("snapshot", []))
 
-    blob_name = f"{network_name}-blob"
-    dbdata_name = f"{network_name}-dbdata"
-
     result = {}
 
-    blob_snaps = sorted(
+    # Web data disk
+    web_vol_name = f"{network_name}-webdata"
+    web_snaps = sorted(
         [s for s in snapshots
-         if s.get("volumename") == blob_name and s.get("state") == "BackedUp"],
+         if s.get("volumename") == web_vol_name and s.get("state") == "BackedUp"],
         key=lambda s: s["created"], reverse=True)
-    if blob_snaps:
-        result["blob"] = blob_snaps[0]
+    if web_snaps:
+        result["webdata"] = web_snaps[0]
 
-    if db_enabled:
-        db_snaps = sorted(
+    # Accessory data disks
+    for acc_name in accessory_names:
+        vol_name = f"{network_name}-{acc_name}data"
+        acc_snaps = sorted(
             [s for s in snapshots
-             if s.get("volumename") == dbdata_name and s.get("state") == "BackedUp"],
+             if s.get("volumename") == vol_name and s.get("state") == "BackedUp"],
             key=lambda s: s["created"], reverse=True)
-        if db_snaps:
-            result["dbdata"] = db_snaps[0]
+        if acc_snaps:
+            result[f"{acc_name}data"] = acc_snaps[0]
 
     return result
 
 
-def recovery_preflight(network_name, zone_id, db_enabled):
+def recovery_preflight(network_name, zone_id, accessory_names):
     """Run pre-flight checks for disaster recovery into a target zone.
 
     1. No network with deployment name in target zone
-    2. No blob/dbdata volumes in target zone
+    2. No web/accessory volumes in target zone
     3. Snapshots must exist in target zone
 
     Returns the snapshot dict for use in disk creation.
@@ -437,34 +440,39 @@ def recovery_preflight(network_name, zone_id, db_enabled):
             f"target zone. Teardown the existing deployment first.")
 
     # Check no existing volumes
-    blob_name = f"{network_name}-blob"
-    if find_volume(blob_name, zone_id):
+    web_vol_name = f"{network_name}-webdata"
+    if find_volume(web_vol_name, zone_id):
         raise RuntimeError(
-            f"Cannot recover: volume '{blob_name}' already exists in "
+            f"Cannot recover: volume '{web_vol_name}' already exists in "
             f"target zone. Teardown the existing deployment first.")
-    if db_enabled:
-        dbdata_name = f"{network_name}-dbdata"
-        if find_volume(dbdata_name, zone_id):
+    for acc_name in accessory_names:
+        vol_name = f"{network_name}-{acc_name}data"
+        if find_volume(vol_name, zone_id):
             raise RuntimeError(
-                f"Cannot recover: volume '{dbdata_name}' already exists in "
+                f"Cannot recover: volume '{vol_name}' already exists in "
                 f"target zone. Teardown the existing deployment first.")
 
     # Find snapshots
-    snapshots = find_latest_snapshots(network_name, zone_id, db_enabled)
-    if "blob" not in snapshots:
+    snapshots = find_latest_snapshots(network_name, zone_id, accessory_names)
+    if "webdata" not in snapshots:
         raise RuntimeError(
-            f"Cannot recover: no blob snapshot found for '{network_name}' "
+            f"Cannot recover: no web data snapshot found for '{network_name}' "
             f"in target zone. Ensure snapshots have been replicated.")
-    if db_enabled and "dbdata" not in snapshots:
-        raise RuntimeError(
-            f"Cannot recover: no dbdata snapshot found for '{network_name}' "
-            f"in target zone. Ensure snapshots have been replicated.")
+    for acc_name in accessory_names:
+        key = f"{acc_name}data"
+        if key not in snapshots:
+            raise RuntimeError(
+                f"Cannot recover: no {acc_name} data snapshot found for "
+                f"'{network_name}' in target zone. Ensure snapshots have "
+                f"been replicated.")
 
-    print(f"  Blob snapshot: {snapshots['blob']['id']} "
-          f"(created {snapshots['blob']['created']})")
-    if db_enabled and "dbdata" in snapshots:
-        print(f"  DB snapshot:   {snapshots['dbdata']['id']} "
-              f"(created {snapshots['dbdata']['created']})")
+    print(f"  Web data snapshot: {snapshots['webdata']['id']} "
+          f"(created {snapshots['webdata']['created']})")
+    for acc_name in accessory_names:
+        key = f"{acc_name}data"
+        if key in snapshots:
+            print(f"  {acc_name} snapshot: {snapshots[key]['id']} "
+                  f"(created {snapshots[key]['created']})")
     print("  Pre-flight checks passed.\n")
 
     return snapshots
@@ -534,34 +542,35 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     """Provision all infrastructure based on the validated config."""
     zone_name = config["zone"]
     web_plan = config["web_plan"]
-    blob_disk_size_gb = config["blob_disk_size_gb"]
-    workers_enabled = config["workers_enabled"]
-    db_enabled = config["db_enabled"]
+    web_disk_size_gb = config["web_disk_size_gb"]
+    workers_replicas = config.get("workers_replicas", 0)
+    accessories = config.get("accessories", [])
 
     network_name = f"{repo_name}-{unique_id}-{env_name}"
     keypair_name = f"{network_name}-key"
-    web_vm_name = f"{network_name}-web"
-    blob_disk_name = f"{network_name}-blob"
+    web_vm_name = "web"
+    web_disk_name = f"{network_name}-webdata"
+
+    # Build accessory name list for snapshot/recovery lookups
+    accessory_names = [a["name"] for a in accessories]
 
     results = {"network_name": network_name}
 
     # Count total public IPs needed
     total_ips = 1  # web always
-    if workers_enabled:
-        total_ips += config["workers_replicas"]
-    if db_enabled:
-        total_ips += 1
+    total_ips += workers_replicas
+    total_ips += len(accessories)
 
     print(f"\n{'='*60}")
     print(f"Provisioning: {network_name}")
     if recover:
         print(f"Mode: DISASTER RECOVERY (from snapshots)")
     print(f"Zone: {zone_name}")
-    print(f"Web: {web_plan} | Blob disk: {blob_disk_size_gb}GB")
-    if workers_enabled:
-        print(f"Workers: {config['workers_replicas']}x {config['workers_plan']}")
-    if db_enabled:
-        print(f"DB: {config['db_plan']} | DB disk: {config['db_disk_size_gb']}GB")
+    print(f"Web: {web_plan} | Web disk: {web_disk_size_gb}GB")
+    if workers_replicas > 0:
+        print(f"Workers: {workers_replicas}x {config['workers_plan']}")
+    for acc in accessories:
+        print(f"Accessory '{acc['name']}': {acc['plan']} | Disk: {acc['disk_size_gb']}GB")
     print(f"Total public IPs needed: {total_ips}")
     print(f"{'='*60}\n")
 
@@ -576,12 +585,13 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     template_id = discover_template(zone_id)
 
     worker_offering_id = None
-    if workers_enabled:
+    if workers_replicas > 0:
         worker_offering_id = resolve_service_offering(config["workers_plan"])
 
-    db_offering_id = None
-    if db_enabled:
-        db_offering_id = resolve_service_offering(config["db_plan"])
+    # Resolve accessory offerings
+    acc_offering_ids = {}
+    for acc in accessories:
+        acc_offering_ids[acc["name"]] = resolve_service_offering(acc["plan"])
 
     print("  All names resolved.\n")
 
@@ -589,7 +599,7 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     recovery_snapshots = None
     if recover:
         recovery_snapshots = recovery_preflight(network_name, zone_id,
-                                                db_enabled)
+                                                accessory_names)
 
     # --- Network ---
     print("Creating isolated network...")
@@ -601,7 +611,8 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
                     f"name={network_name}",
                     f"displaytext={network_name}",
                     f"networkofferingid={net_offering_id}",
-                    f"zoneid={zone_id}")
+                    f"zoneid={zone_id}",
+                    f"networkdomain={env_name}.internal")
         net_id = data["network"]["id"]
         print(f"  Created: {net_id}")
     results["network_id"] = net_id
@@ -625,36 +636,39 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     results["web_vm_id"] = web_vm_id
 
     worker_vm_ids = []
-    if workers_enabled:
-        num_workers = config["workers_replicas"]
-        print(f"\nDeploying {num_workers} worker VM(s)...")
-        for i in range(1, num_workers + 1):
-            worker_name = f"{network_name}-worker-{i}"
+    if workers_replicas > 0:
+        print(f"\nDeploying {workers_replicas} worker VM(s)...")
+        for i in range(1, workers_replicas + 1):
+            worker_name = f"worker-{i}"
             wid, _ = deploy_vm(worker_name, worker_offering_id, template_id,
                               zone_id, net_id, keypair_name,
                               userdata_path=WORKER_USERDATA)
             worker_vm_ids.append(wid)
         results["worker_vm_ids"] = worker_vm_ids
 
-    db_vm_id = None
-    if db_enabled:
-        db_vm_name = f"{network_name}-db"
-        print("\nDeploying database VM...")
-        db_vm_id, db_vm_scaled = deploy_vm(db_vm_name, db_offering_id,
-                                           template_id, zone_id, net_id,
-                                           keypair_name,
-                                           userdata_path=DB_USERDATA)
-        results["db_vm_id"] = db_vm_id
-        results["db_vm_scaled"] = db_vm_scaled
+    # --- Deploy accessory VMs ---
+    acc_results = {}
+    for acc in accessories:
+        acc_name = acc["name"]
+        acc_vm_name = acc_name
+        print(f"\nDeploying accessory VM '{acc_name}'...")
+        acc_vm_id, acc_vm_scaled = deploy_vm(
+            acc_vm_name, acc_offering_ids[acc_name], template_id,
+            zone_id, net_id, keypair_name,
+            userdata_path=ACCESSORY_USERDATA)
+        acc_results[acc_name] = {
+            "vm_id": acc_vm_id,
+            "vm_scaled": acc_vm_scaled,
+        }
 
     # --- Scale down excess workers ---
-    desired_workers = config["workers_replicas"] if workers_enabled else 0
+    desired_workers = workers_replicas
     print("\nChecking for excess workers...")
     excess_idx = desired_workers + 1
     removed = 0
     while True:
-        worker_name = f"{network_name}-worker-{excess_idx}"
-        vm = find_vm(worker_name, zone_id=zone_id)
+        worker_name = f"worker-{excess_idx}"
+        vm = find_vm(worker_name, zone_id=zone_id, network_id=net_id)
         if not vm:
             break
         print(f"  Removing: {worker_name}")
@@ -667,18 +681,15 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
         print(f"  Removed {removed} excess worker(s).")
 
     # --- Public IPs & Static NAT ---
-    # Respect existing NAT mappings to avoid conflicts during scale-up.
-    # CloudStack prohibits a VM from having two static NAT IPs, so we
-    # must reuse existing assignments rather than blindly re-ordering.
     print("\nAssigning public IPs...")
 
     # Build ordered list of VMs needing IPs
     vm_assignments = [("Web", web_vm_id)]
-    if workers_enabled:
+    if workers_replicas > 0:
         for i, wid in enumerate(worker_vm_ids, 1):
             vm_assignments.append((f"Worker {i}", wid))
-    if db_enabled:
-        vm_assignments.append(("DB", db_vm_id))
+    for acc in accessories:
+        vm_assignments.append((f"Accessory ({acc['name']})", acc_results[acc["name"]]["vm_id"]))
 
     # Check existing static NAT assignments
     ip_map = {}  # vm_id -> ip_obj
@@ -720,19 +731,20 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     results["web_ip_id"] = web_ip["id"]
 
     worker_ips = []
-    if workers_enabled:
+    if workers_replicas > 0:
         for i, wid in enumerate(worker_vm_ids, 1):
             wip = ip_map[wid]
             worker_ips.append(wip)
             print(f"  Worker {i} IP: {wip['ipaddress']}")
         results["worker_ips"] = [ip["ipaddress"] for ip in worker_ips]
 
-    db_ip = None
-    if db_enabled:
-        db_ip = ip_map[db_vm_id]
-        print(f"  DB IP: {db_ip['ipaddress']}")
-        results["db_ip"] = db_ip["ipaddress"]
-        results["db_ip_id"] = db_ip["id"]
+    for acc in accessories:
+        acc_name = acc["name"]
+        acc_vm_id = acc_results[acc_name]["vm_id"]
+        acc_ip = ip_map[acc_vm_id]
+        print(f"  {acc_name} IP: {acc_ip['ipaddress']}")
+        acc_results[acc_name]["ip"] = acc_ip["ipaddress"]
+        acc_results[acc_name]["ip_id"] = acc_ip["id"]
 
     # --- Firewall Rules ---
     print("\nCreating firewall rules...")
@@ -741,11 +753,13 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
         (web_ip["id"], 80, 80, "HTTP (web)"),
         (web_ip["id"], 443, 443, "HTTPS (web)"),
     ]
-    if workers_enabled:
+    if workers_replicas > 0:
         for i, wip in enumerate(worker_ips, 1):
             fw_rules.append((wip["id"], 22, 22, f"SSH (worker-{i})"))
-    if db_enabled:
-        fw_rules.append((db_ip["id"], 22, 22, "SSH (db)"))
+    for acc in accessories:
+        acc_name = acc["name"]
+        fw_rules.append((acc_results[acc_name]["ip_id"], 22, 22,
+                         f"SSH ({acc_name})"))
 
     for ip_id, start, end, desc in fw_rules:
         existing = find_firewall_rules(ip_id)
@@ -765,52 +779,59 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     # --- Data Disks ---
     if recover:
         print("\nRecovering data disks from snapshots...")
-        blob_vol_id = create_disk_from_snapshot(
-            blob_disk_name, recovery_snapshots["blob"]["id"],
-            web_vm_id, network_name, zone_id, "Blob disk (web)")
-        results["blob_volume_id"] = blob_vol_id
+        web_vol_id = create_disk_from_snapshot(
+            web_disk_name, recovery_snapshots["webdata"]["id"],
+            web_vm_id, network_name, zone_id, "Web data disk")
+        results["web_volume_id"] = web_vol_id
 
-        if db_enabled:
-            db_disk_name = f"{network_name}-dbdata"
-            db_vol_id = create_disk_from_snapshot(
-                db_disk_name, recovery_snapshots["dbdata"]["id"],
-                db_vm_id, network_name, zone_id, "DB disk (db)")
-            results["db_volume_id"] = db_vol_id
+        for acc in accessories:
+            acc_name = acc["name"]
+            acc_disk_name = f"{network_name}-{acc_name}data"
+            acc_vol_id = create_disk_from_snapshot(
+                acc_disk_name, recovery_snapshots[f"{acc_name}data"]["id"],
+                acc_results[acc_name]["vm_id"], network_name, zone_id,
+                f"{acc_name} data disk")
+            acc_results[acc_name]["volume_id"] = acc_vol_id
     else:
         print("\nCreating data disks...")
-        blob_vol_id = create_disk(blob_disk_name, disk_offering_id, zone_id,
-                                  blob_disk_size_gb, web_vm_id,
-                                  network_name, "Blob disk (web)")
-        results["blob_volume_id"] = blob_vol_id
+        web_vol_id = create_disk(web_disk_name, disk_offering_id, zone_id,
+                                  web_disk_size_gb, web_vm_id,
+                                  network_name, "Web data disk")
+        results["web_volume_id"] = web_vol_id
 
-        if db_enabled:
-            db_disk_name = f"{network_name}-dbdata"
-            db_vol_id = create_disk(db_disk_name, disk_offering_id, zone_id,
-                                    config["db_disk_size_gb"], db_vm_id,
-                                    network_name, "DB disk (db)")
-            results["db_volume_id"] = db_vol_id
+        for acc in accessories:
+            acc_name = acc["name"]
+            acc_disk_name = f"{network_name}-{acc_name}data"
+            acc_vol_id = create_disk(acc_disk_name, disk_offering_id, zone_id,
+                                     acc["disk_size_gb"],
+                                     acc_results[acc_name]["vm_id"],
+                                     network_name, f"{acc_name} data disk")
+            acc_results[acc_name]["volume_id"] = acc_vol_id
 
     # --- Snapshot Policies ---
     print("\nCreating snapshot policies...")
-    create_snapshot_policy(blob_vol_id, network_name, snapshot_zoneids, "Blob disk")
-    if db_enabled:
-        create_snapshot_policy(db_vol_id, network_name, snapshot_zoneids, "DB disk")
+    create_snapshot_policy(web_vol_id, network_name, snapshot_zoneids, "Web data disk")
+    for acc in accessories:
+        acc_name = acc["name"]
+        create_snapshot_policy(acc_results[acc_name]["volume_id"],
+                               network_name, snapshot_zoneids,
+                               f"{acc_name} data disk")
 
     # --- Internal IPs ---
     print("\nRetrieving internal IPs...")
     results["web_internal_ip"] = get_vm_internal_ip(web_vm_id)
     print(f"  Web: {results['web_internal_ip']}")
 
-    if workers_enabled:
+    if workers_replicas > 0:
         results["worker_internal_ips"] = []
         for i, wid in enumerate(worker_vm_ids, 1):
             wip = get_vm_internal_ip(wid)
             results["worker_internal_ips"].append(wip)
             print(f"  Worker {i}: {wip}")
 
-    if db_enabled:
-        results["db_internal_ip"] = get_vm_internal_ip(db_vm_id)
-        print(f"  DB: {results['db_internal_ip']}")
+    # Store accessories in output
+    if acc_results:
+        results["accessories"] = acc_results
 
     # --- Summary ---
     print(f"\n{'='*60}")
@@ -819,11 +840,12 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     print(f"  Network:      {network_name} ({net_id})")
     print(f"  SSH Key Pair: {keypair_name}")
     print(f"  Web VM:       {web_vm_name} -> {web_ip['ipaddress']}")
-    if workers_enabled:
-        for i in range(config["workers_replicas"]):
-            print(f"  Worker {i+1} VM:  {network_name}-worker-{i+1} -> {worker_ips[i]['ipaddress']}")
-    if db_enabled:
-        print(f"  DB VM:        {network_name}-db -> {db_ip['ipaddress']}")
+    if workers_replicas > 0:
+        for i in range(workers_replicas):
+            print(f"  Worker {i+1} VM:  worker-{i+1} -> {worker_ips[i]['ipaddress']}")
+    for acc in accessories:
+        acc_name = acc["name"]
+        print(f"  {acc_name} VM:    {acc_name} -> {acc_results[acc_name]['ip']}")
     print(f"{'='*60}\n")
 
     return results

@@ -20,7 +20,7 @@ F2BEOF
 systemctl restart fail2ban
 
 DEVICE="/dev/vdb"
-MOUNT_POINT="/data/blobs"
+MOUNT_POINT="/data"
 
 # Wait for the attached data disk to appear
 echo "Waiting for $DEVICE..."
