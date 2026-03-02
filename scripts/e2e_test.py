@@ -429,6 +429,7 @@ def write_destination_file(env_name, workers=0, domain=None, accessories=None):
         "",
         "proxy:",
         f"  host: {domain}" if domain else "  host: <%= ENV['INFRA_WEB_IP'] %>.nip.io",
+    ] + (["  ssl: false"] if not domain else []) + [
         "",
         "ssh:",
         "  user: root",
@@ -659,20 +660,22 @@ class SSHVerifier:
 class HTTPVerifier:
     """HTTP request verification against the deployed application.
 
-    Always uses HTTPS with certificate verification. TLS is enabled for
-    both custom domain and nip.io deployments via Let's Encrypt.
+    Uses HTTPS for custom domain deployments (Let's Encrypt) and plain
+    HTTP for nip.io deployments (no TLS needed for e2e smoke tests).
     """
 
     def __init__(self, ip, domain=None):
         self.ip = ip
         self.domain = domain
         self.host = domain if domain else f"{ip}.nip.io"
-        self.use_https = True
+        self.use_https = bool(domain)
 
     def _connect(self, timeout=10):
-        """Create an HTTPS connection."""
-        ctx = ssl.create_default_context()
-        return HTTPSConnection(self.host, 443, timeout=timeout, context=ctx)
+        """Create an HTTP or HTTPS connection based on deployment type."""
+        if self.use_https:
+            ctx = ssl.create_default_context()
+            return HTTPSConnection(self.host, 443, timeout=timeout, context=ctx)
+        return HTTPConnection(self.host, 80, timeout=timeout)
 
     def get(self, path="/", timeout=10):
         """HTTP(S) GET. Returns (status_code, body)."""
