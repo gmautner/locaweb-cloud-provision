@@ -592,10 +592,11 @@ class SSHVerifier:
         Uses blockdev --getsize64 on the device backing the mount.
         Returns the size in bytes, or None on failure.
         """
+        mp = mount_path.rstrip("/")
         rc, stdout, _ = self.run_command(
             ip,
             f"blockdev --getsize64 /dev/$(lsblk -rno NAME,MOUNTPOINT "
-            f"| grep '{mount_path}$' | awk '{{print $1}}')")
+            f"| grep '{mp}$' | awk '{{print $1}}')")
         if rc == 0 and stdout.strip().isdigit():
             return int(stdout.strip())
         return None
