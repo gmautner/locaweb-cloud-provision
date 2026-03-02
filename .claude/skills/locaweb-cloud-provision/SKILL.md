@@ -1,5 +1,5 @@
 ---
-name: locaweb-cloud-deploy
+name: locaweb-cloud-provision
 description: >
   Use this skill to decide on the architecture of the app (monolith vs microservices, single
   container, horizontal and vertical scaling), choose accessories (databases, queues, caches, search, pub/sub,
@@ -13,7 +13,7 @@ description: >
 
 **Always respond in the same language the user is using.**
 
-Deploy web applications to Locaweb Cloud by calling reusable workflows from `gmautner/locaweb-cloud-deploy`. The platform provisions CloudStack VMs, networks, disks, and firewall rules, then deploys containers via Kamal 2 with zero-downtime proxy.
+Deploy web applications to Locaweb Cloud by calling reusable workflows from `gmautner/locaweb-cloud-provision`. The platform provisions CloudStack VMs, networks, disks, and firewall rules, then deploys containers via Kamal 2 with zero-downtime proxy.
 
 ## Platform Constraints (Read First)
 
@@ -42,10 +42,10 @@ If the application's current design conflicts with any of these (e.g., depends o
 ## Workflow Overview
 
 ```
-Caller repo                          gmautner/locaweb-cloud-deploy
+Caller repo                          gmautner/locaweb-cloud-provision
 +-----------------------+            +-----------------------------+
 | .github/workflows/    |            | .github/workflows/          |
-|   deploy.yml          |            |   deploy.yml (provisions    |
+|   deploy.yml          |            |   provision.yml (provisions |
 |     job: infra  ------------>      |     infrastructure only)    |
 |     job: deploy       |            |   teardown.yml (destroys    |
 |       (Kamal deploy)  |            |     all resources)          |
@@ -56,7 +56,7 @@ Caller repo                          gmautner/locaweb-cloud-deploy
 +-----------------------+
 ```
 
-The caller uses a two-job pattern: the `infra` job calls `deploy.yml` for infrastructure provisioning, and the `deploy` job handles Kamal deployment using the infra outputs (`infra_env`, `infrastructure_changed`, `scaled_accessories`).
+The caller uses a two-job pattern: the `infra` job calls `provision.yml` for infrastructure provisioning, and the `deploy` job handles Kamal deployment using the infra outputs (`infra_env`, `infrastructure_changed`, `scaled_accessories`).
 
 ## Setup Procedure
 

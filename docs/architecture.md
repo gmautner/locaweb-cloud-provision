@@ -1,4 +1,4 @@
-# Architecture Design Document -- locaweb-cloud-deploy
+# Architecture Design Document -- locaweb-cloud-provision
 
 **Status:** Living document
 **Last updated:** 2026-02-19
@@ -21,7 +21,7 @@
 
 ## Overview
 
-`locaweb-cloud-deploy` automates end-to-end deployment of containerized web applications onto Locaweb Cloud, a CloudStack-based IaaS platform. The system uses GitHub Actions as its orchestration layer and Kamal 2 as its container deployment tool.
+`locaweb-cloud-provision` automates end-to-end deployment of containerized web applications onto Locaweb Cloud, a CloudStack-based IaaS platform. The system uses GitHub Actions as its orchestration layer and Kamal 2 as its container deployment tool.
 
 The deploy and teardown workflows support dual triggers: `workflow_dispatch` for direct use, and `workflow_call` for invocation by external repositories. This makes the system a reusable deployment platform — any application repository can reference the workflows without duplicating infrastructure logic. A dual checkout pattern retrieves the caller's application code alongside the infrastructure scripts from this repository.
 
@@ -53,7 +53,7 @@ The system is composed of five logical layers:
 ```
 +---------------------------------------------------------------+
 |                      GitHub Actions                           |
-|  (Orchestration: deploy.yml, teardown.yml, test-infrastructure.yml,          |
+|  (Orchestration: provision.yml, teardown.yml, test-infrastructure.yml,          |
 |   e2e-test.yml)                                               |
 +---------------------------------------------------------------+
         |                    |                    |
@@ -101,13 +101,13 @@ Examples (with env_name `preview`):
 
 Five workflow files orchestrate the system. The deploy (infra) and teardown workflows support dual triggers: `workflow_dispatch` (manual/internal) and `workflow_call` (reusable/cross-repo). The deploy-app workflow uses `workflow_dispatch` only (for internal development and E2E testing). The test workflows use `workflow_dispatch` only.
 
-#### deploy.yml (Infrastructure Only)
+#### provision.yml (Infrastructure Only)
 
 A single-job reusable workflow that provisions CloudStack infrastructure and outputs everything the caller needs to deploy with Kamal. This workflow is infra-only — it does **not** install Kamal, build Docker images, or deploy the application (see ADR-028). The job runs on `ubuntu-latest` and requires only `contents: read` permissions.
 
 **Triggers:** `workflow_dispatch` for direct use and `workflow_call` for invocation by external repositories. Both triggers accept the same inputs, though `workflow_call` uses `type: string` where `workflow_dispatch` uses `type: choice` (unsupported by `workflow_call`). Boolean and number types are shared as-is.
 
-**Single checkout:** The workflow checks out only the infrastructure scripts from `gmautner/locaweb-cloud-deploy` into `_infra/`. Application code is not needed at the infra layer — the caller handles that in its own deploy job.
+**Single checkout:** The workflow checks out only the infrastructure scripts from `gmautner/locaweb-cloud-provision` into `_infra/`. Application code is not needed at the infra layer — the caller handles that in its own deploy job.
 
 **Concurrency:** Shares a per-environment concurrency group (`infra-${{ github.repository }}-${{ inputs.env_name }}`) with `teardown.yml` to prevent overlapping infrastructure operations on the same environment. Deploying to "staging" does not block "production". `cancel-in-progress` is false so queued runs wait rather than cancel.
 
@@ -139,7 +139,7 @@ A single-job reusable workflow that provisions CloudStack infrastructure and out
 
 **Step sequence:**
 
-1. **Checkout infrastructure scripts** -- `actions/checkout@v4` with `repository: gmautner/locaweb-cloud-deploy` and `path: _infra`.
+1. **Checkout infrastructure scripts** -- `actions/checkout@v4` with `repository: gmautner/locaweb-cloud-provision` and `path: _infra`.
 2. **Compute infrastructure cache key** -- Hashes `toJSON(inputs)` via `sha256sum` to produce a deterministic cache key that captures every workflow input.
 3. **Cache infrastructure state** -- Uses `actions/cache@v4` to cache `/tmp/provision-output.json` keyed by `infra-{repository}-{env_name}-{hash}`. Bypassed when `recover: true`. On cache hit, steps 4-7 and 10 are skipped (see ADR-026).
 4. **Build configuration** *(skipped on cache hit)* -- Inline Python assembles workflow inputs into a JSON config file at `/tmp/config.json`.
@@ -153,9 +153,9 @@ A single-job reusable workflow that provisions CloudStack infrastructure and out
 
 #### deploy-app.yml (Internal Caller Simulation)
 
-A two-job `workflow_dispatch` workflow for internal development and E2E testing. It calls `deploy.yml` for infrastructure, then handles Kamal deployment in a separate job using the infra outputs.
+A two-job `workflow_dispatch` workflow for internal development and E2E testing. It calls `provision.yml` for infrastructure, then handles Kamal deployment in a separate job using the infra outputs.
 
-**Job 1 (`infra`):** Calls `deploy.yml` as a reusable workflow, forwarding all infrastructure inputs and secrets.
+**Job 1 (`infra`):** Calls `provision.yml` as a reusable workflow, forwarding all infrastructure inputs and secrets.
 
 **Job 2 (`deploy`, needs: infra):**
 
@@ -172,9 +172,9 @@ A two-job `workflow_dispatch` workflow for internal development and E2E testing.
 
 #### teardown.yml
 
-A reusable workflow that destroys all CloudStack resources in reverse creation order. Supports both `workflow_dispatch` and `workflow_call` triggers. Uses the same CloudMonkey installation pattern as the deploy workflow. Shares the per-environment `infra-${{ github.repository }}-${{ inputs.env_name }}` concurrency group with `deploy.yml`.
+A reusable workflow that destroys all CloudStack resources in reverse creation order. Supports both `workflow_dispatch` and `workflow_call` triggers. Uses the same CloudMonkey installation pattern as the provision workflow. Shares the per-environment `infra-${{ github.repository }}-${{ inputs.env_name }}` concurrency group with `provision.yml`.
 
-**Dual checkout:** Unlike deploy.yml, the teardown workflow only needs the infrastructure scripts (no application code), so it performs a single checkout of `gmautner/locaweb-cloud-deploy` into `_infra/`.
+**Dual checkout:** Unlike provision.yml, the teardown workflow only needs the infrastructure scripts (no application code), so it performs a single checkout of `gmautner/locaweb-cloud-provision` into `_infra/`.
 
 **Workflow inputs:**
 
@@ -222,7 +222,7 @@ The test workflow generates a fresh ed25519 SSH key pair per run to avoid CloudS
 
 An application-focused E2E test workflow that triggers the **real** `deploy-app.yml` workflow, waits for it to complete, then verifies the deployed application works correctly. Unlike `test-infrastructure.yml` which validates CloudStack resources, this workflow validates the full deployment pipeline including Kamal, container deployment, and application behavior.
 
-**Concurrency:** Uses its own concurrency group (`e2e-test-${{ github.repository }}`), separate from the `infra-${{ github.repository }}` group shared by `deploy.yml` and `teardown.yml`. This prevents deadlocks: the E2E workflow triggers deploy-app/teardown via `gh workflow run`, and if they shared a group, the triggered workflow would queue behind the E2E run that's waiting for it.
+**Concurrency:** Uses its own concurrency group (`e2e-test-${{ github.repository }}`), separate from the `infra-${{ github.repository }}` group shared by `provision.yml` and `teardown.yml`. This prevents deadlocks: the E2E workflow triggers deploy-app/teardown via `gh workflow run`, and if they shared a group, the triggered workflow would queue behind the E2E run that's waiting for it.
 
 **Permissions:** `contents: read`, `actions: write` (the latter is needed to trigger workflows via the `gh` CLI).
 
@@ -268,7 +268,7 @@ A Python script that uses the CloudMonkey CLI (`cmk`) to interact with the Cloud
 - **Worker scale-down**: After deploying the desired number of workers, the script probes for excess workers (worker-N+1, worker-N+2, ...) and destroys them along with their associated public IPs, firewall rules, and static NAT mappings.
 - **Static NAT conflict avoidance**: When assigning public IPs, the script first checks for existing static NAT mappings per VM. It reuses existing assignments and only acquires new IPs for VMs that lack one. This prevents CloudStack's "VM already has a static NAT IP" error during scale-up scenarios.
 - **Userdata injection**: All VMs receive base64-encoded cloud-init scripts. Web and DB scripts format and mount their data disks. All scripts (web, worker, DB) install and configure fail2ban for SSH brute-force protection.
-- **Volume tagging**: Data disks are tagged with `locaweb-cloud-deploy-id={network-name}` to enable the teardown script to find them reliably.
+- **Volume tagging**: Data disks are tagged with `locaweb-cloud-provision-id={network-name}` to enable the teardown script to find them reliably.
 - **Disaster recovery**: When `--recover` is passed, the script creates data volumes from the latest available snapshots (MANUAL or RECURRING, in BackedUp state) in the target zone instead of blank disks. Pre-flight checks verify no conflicting deployment exists and required snapshots are available. Snapshot policies are still created on recovered volumes for ongoing protection.
 - **Template discovery**: Automatically selects the most recent Ubuntu 24.x template matching the regex `^Ubuntu.*24.*$`.
 
@@ -314,7 +314,7 @@ An application-level test orchestrator that triggers real workflow runs and veri
 
 - **SSHVerifier**: SSH connectivity, mount point verification, disk write tests, Docker container discovery, and container environment variable checks via `docker exec`.
 - **HTTPVerifier**: HTTP GET/POST with `Host` header for kamal-proxy routing, health check polling, form submission, and multipart file upload.
-- **Workflow helpers**: Triggers `deploy.yml` and `teardown.yml` via `gh workflow run`, polls for new run detection, watches completion with `gh run watch`, and downloads artifacts.
+- **Workflow helpers**: Triggers `deploy-app.yml` and `teardown.yml` via `gh workflow run`, polls for new run detection, watches completion with `gh run watch`, and downloads artifacts.
 - **Disk size verification**: Uses `blockdev --getsize64` via SSH to verify raw block device sizes match the provisioned disk sizes (both implicit defaults and explicit inputs).
 
 ### 5. Kamal 2 Deployment Configuration
@@ -586,7 +586,7 @@ HTTPS Request -> Public IP -> Static NAT -> Web VM:443
    v
 3. For each scenario:
    |
-   +-- Trigger deploy.yml via `gh workflow run`
+   +-- Trigger deploy-app.yml via `gh workflow run`
    +-- Poll for new run (ID > previous latest)
    +-- Watch run until completion (`gh run watch`)
    +-- Download provision-output artifact
@@ -613,7 +613,7 @@ HTTPS Request -> Public IP -> Static NAT -> Web VM:443
 ### Disaster recovery data flow
 
 ```
-1. User triggers deploy.yml with recover=true, zone=<target-zone>
+1. User triggers provision.yml with recover=true, zone=<target-zone>
    |
    v
 2. Provision infrastructure

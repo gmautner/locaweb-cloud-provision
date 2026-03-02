@@ -155,7 +155,7 @@ def verify_snapshot_policy(vol_id, expected_network_name=None):
 
     Checks:
     1. At least one policy exists.
-    2. The policy has the locaweb-cloud-deploy-id tag with the expected value.
+    2. The policy has the locaweb-cloud-provision-id tag with the expected value.
     3. The policy replicates to all available zones (ZP01 + ZP02).
 
     Returns a dict with keys: exists, tag_ok, zones_ok, zone_names, details.
@@ -173,7 +173,7 @@ def verify_snapshot_policy(vol_id, expected_network_name=None):
 
     # Check tag
     tags = policy.get("tags", [])
-    deploy_tags = [t for t in tags if t.get("key") == "locaweb-cloud-deploy-id"]
+    deploy_tags = [t for t in tags if t.get("key") == "locaweb-cloud-provision-id"]
     if deploy_tags:
         tag_value = deploy_tags[0].get("value", "")
         if expected_network_name is None or tag_value == expected_network_name:
@@ -183,7 +183,7 @@ def verify_snapshot_policy(vol_id, expected_network_name=None):
                                  f"expected={expected_network_name}, "
                                  f"actual={tag_value}")
     else:
-        result["details"] = "locaweb-cloud-deploy-id tag not found"
+        result["details"] = "locaweb-cloud-provision-id tag not found"
 
     # Check zones — policy should cover all available zones
     zones = policy.get("zone", [])
@@ -226,9 +226,9 @@ def create_tagged_snapshot(vol_id, network_name):
     cmk("create", "tags",
         f"resourceids={snap_id}",
         "resourcetype=Snapshot",
-        "tags[0].key=locaweb-cloud-deploy-id",
+        "tags[0].key=locaweb-cloud-provision-id",
         f"tags[0].value={network_name}")
-    print(f"    Tagged snapshot with locaweb-cloud-deploy-id={network_name}")
+    print(f"    Tagged snapshot with locaweb-cloud-provision-id={network_name}")
     return snap_id
 
 
@@ -236,7 +236,7 @@ def wait_for_snapshot_in_zone(vol_name, network_name, zone_name, timeout=600):
     """Poll for a snapshot to appear in a zone with state=BackedUp.
 
     Checks both MANUAL and RECURRING snapshot types, matching by tag
-    (locaweb-cloud-deploy-id) and volumename — same logic as
+    (locaweb-cloud-provision-id) and volumename — same logic as
     find_latest_snapshots in provision_infrastructure.py.
 
     Returns True when found, False on timeout.
@@ -263,7 +263,7 @@ def wait_for_snapshot_in_zone(vol_name, network_name, zone_name, timeout=600):
                        f"zoneid={zone_id}",
                        "filter=id,volumename,state",
                        f"snapshottype={snap_type}",
-                       "tags[0].key=locaweb-cloud-deploy-id",
+                       "tags[0].key=locaweb-cloud-provision-id",
                        f"tags[0].value={network_name}")
             if data:
                 all_snaps.extend(data.get("snapshot", []))

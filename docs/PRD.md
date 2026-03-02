@@ -1,4 +1,4 @@
-# Product Requirements Document: locaweb-cloud-deploy
+# Product Requirements Document: locaweb-cloud-provision
 
 **Version:** 1.0
 **Date:** 2026-02-13
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-`locaweb-cloud-deploy` is a reusable GitHub Actions workflow that automates end-to-end deployment of web applications onto Locaweb Cloud, a CloudStack-based Infrastructure-as-a-Service (IaaS) platform. It provisions all required infrastructure -- virtual machines, networks, disks, public IPs, firewall rules, and snapshot policies -- and then deploys a containerized application using Kamal 2.
+`locaweb-cloud-provision` is a reusable GitHub Actions workflow that automates end-to-end deployment of web applications onto Locaweb Cloud, a CloudStack-based Infrastructure-as-a-Service (IaaS) platform. It provisions all required infrastructure -- virtual machines, networks, disks, public IPs, firewall rules, and snapshot policies -- and then deploys a containerized application using Kamal 2.
 
 The workflow is designed to be invoked by other repositories, providing a turnkey deployment layer that any application repository can adopt. Both `workflow_dispatch` (direct/internal) and `workflow_call` (reusable/cross-repo) triggers are supported, so any repo can reference the deploy and teardown workflows without duplicating infrastructure logic.
 
@@ -140,7 +140,7 @@ The deployed application must meet the following contract:
 | NFR-04 | **Security.** The container registry (ghcr.io) shall be accessed using the automatic GITHUB_TOKEN; no separate registry credentials are required. |
 | NFR-05 | **Performance.** The provisioning step should complete within a reasonable time frame, limited primarily by CloudStack API response times. |
 | NFR-06 | **Observability.** All provisioning and deployment steps shall produce structured log output in the GitHub Actions workflow, making it straightforward to diagnose failures. |
-| NFR-07 | **Separation of concerns.** Infrastructure provisioning (CloudStack-specific) and container deployment (Kamal) are clearly separated into distinct workflow jobs. The infra workflow (`deploy.yml`) outputs everything the caller needs; application deployment (Kamal) is handled by the caller (see ADR-028). This is a technical design decision, not aimed at cloud portability. |
+| NFR-07 | **Separation of concerns.** Infrastructure provisioning (CloudStack-specific) and container deployment (Kamal) are clearly separated into distinct workflow jobs. The infra workflow (`provision.yml`) outputs everything the caller needs; application deployment (Kamal) is handled by the caller (see ADR-028). This is a technical design decision, not aimed at cloud portability. |
 
 ---
 
@@ -177,7 +177,7 @@ GitHub Actions (workflow_dispatch)
 
 ### Component Responsibilities
 
-- **GitHub Actions workflows** orchestrate the entire lifecycle: infrastructure provisioning (`deploy.yml`), application deployment (`deploy-app.yml` for internal use, or the caller's own workflow for external use), testing, and teardown.
+- **GitHub Actions workflows** orchestrate the entire lifecycle: infrastructure provisioning (`provision.yml`), application deployment (`deploy-app.yml` for internal use, or the caller's own workflow for external use), testing, and teardown.
 - **`scripts/provision_infrastructure.py`** calls the CloudStack API via CloudMonkey (`cmk`) to create and configure all infrastructure resources idempotently.
 - **Kamal 2** handles Docker installation on fresh VMs, image building and pushing to ghcr.io, container deployment with zero-downtime proxy, and accessory (PostgreSQL) management.
 - **Cloud-init scripts** (`scripts/userdata/`) run on first boot to prepare data disks (format, mount).
@@ -187,7 +187,7 @@ GitHub Actions (workflow_dispatch)
 
 ## 7. Workflow Inputs
 
-The deploy workflow (`deploy.yml`) accepts the following inputs via `workflow_dispatch` and `workflow_call`. When invoked via `workflow_call`, `choice` inputs become `string` (GitHub Actions limitation). Boolean and number types are shared as-is:
+The provision workflow (`provision.yml`) accepts the following inputs via `workflow_dispatch` and `workflow_call`. When invoked via `workflow_call`, `choice` inputs become `string` (GitHub Actions limitation). Boolean and number types are shared as-is:
 
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -219,7 +219,7 @@ When using the workflows internally, the following secrets are configured in thi
 | `POSTGRES_PASSWORD` | When `db_enabled` | PostgreSQL superuser password. Validated at workflow start; workflow fails fast if missing. |
 | `GITHUB_TOKEN` | Automatic | Provided automatically by GitHub Actions. Used for pushing container images to ghcr.io and for triggering workflows from the E2E test. |
 
-Application secrets (e.g., `POSTGRES_PASSWORD`, custom API keys) are no longer passed through the infrastructure workflow. Instead, the caller maps them directly as environment variables in its own deploy job. The `SECRET_ENV_VARS` secret has been removed from `deploy.yml` (see ADR-028). For E2E testing, `deploy-app.yml` retains a `secret_env_vars` workflow_dispatch input for compatibility.
+Application secrets (e.g., `POSTGRES_PASSWORD`, custom API keys) are no longer passed through the infrastructure workflow. Instead, the caller maps them directly as environment variables in its own deploy job. The `SECRET_ENV_VARS` secret has been removed from `provision.yml` (see ADR-028). For E2E testing, `deploy-app.yml` retains a `secret_env_vars` workflow_dispatch input for compatibility.
 
 ---
 
@@ -233,7 +233,7 @@ External repositories invoke the deploy and teardown workflows via `workflow_cal
 
 ### Caller deploy workflow example
 
-External repositories use a two-job pattern: the first job calls `deploy.yml` for infrastructure, and the second job handles Kamal deployment using the infra outputs.
+External repositories use a two-job pattern: the first job calls `provision.yml` for infrastructure, and the second job handles Kamal deployment using the infra outputs.
 
 ```yaml
 # .github/workflows/deploy.yml
@@ -245,7 +245,7 @@ permissions:
   packages: write
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@main
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@main
     with:
       env_name: "production"
       zone: "ZP01"
@@ -276,7 +276,7 @@ on:
   workflow_dispatch:
 jobs:
   teardown:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/teardown.yml@main
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/teardown.yml@main
     with:
       env_name: "production"
       zone: "ZP01"
@@ -320,13 +320,13 @@ The system supports four deployment topologies, all controlled through workflow 
 ## 11. File Structure
 
 ```
-locaweb-cloud-deploy/
+locaweb-cloud-provision/
 |-- app.py                              Sample Flask application
 |-- Dockerfile                          Container image (python:3.12-slim + gunicorn)
 |-- requirements.txt                    Python dependencies
 |-- .github/
 |   `-- workflows/
-|       |-- deploy.yml                  Infrastructure provisioning workflow (infra-only)
+|       |-- provision.yml               Infrastructure provisioning workflow (infra-only)
 |       |-- deploy-app.yml             Internal caller: infra + Kamal deployment
 |       |-- teardown.yml                Destroy all resources workflow
 |       |-- test-infrastructure.yml     Infrastructure validation tests

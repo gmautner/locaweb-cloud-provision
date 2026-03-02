@@ -14,7 +14,7 @@
 
 External callers use a two-job workflow to deploy applications:
 
-1. **`infra` job**: Calls `deploy.yml` to provision CloudStack infrastructure. Outputs IPs, cache status, and environment bindings.
+1. **`infra` job**: Calls `provision.yml` to provision CloudStack infrastructure. Outputs IPs, cache status, and environment bindings.
 2. **`deploy` job** (needs: infra): Checks out the application, loads infra outputs into the environment, installs Kamal, and deploys.
 
 This separation keeps application secrets (database passwords, API keys) out of the infrastructure workflow. The infra workflow only needs `contents: read`; the caller's deploy job handles `packages: write` for ghcr.io.
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@v1
     with:
       env_name: "preview"
       zone: "ZP01"
@@ -154,7 +154,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@v1
     with:
       env_name: "production"
       zone: "ZP01"
@@ -239,7 +239,7 @@ To deploy to production: `git tag v1.0.0 && git push --tags`. The workflow check
 
 ## Deploy Input Reference
 
-All inputs to `deploy.yml`, their types, defaults, and when to use them:
+All inputs to `provision.yml`, their types, defaults, and when to use them:
 
 | Input | Type | Default | When to set |
 |-------|------|---------|-------------|
@@ -263,7 +263,7 @@ For most deployments, omit these (let defaults apply):
 
 ## Deploy Output Reference
 
-Outputs from `deploy.yml` that the caller's deploy job consumes:
+Outputs from `provision.yml` that the caller's deploy job consumes:
 
 | Output | Type | Description |
 |--------|------|-------------|
@@ -302,7 +302,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@v1
     with:
       env_name: "preview"                    # Optional, default: "preview"
       zone: "ZP01"                           # Optional, default: "ZP01" (options: ZP01, ZP02)
@@ -400,4 +400,4 @@ permissions:
   packages: write
 ```
 
-`packages: write` is required because the caller's deploy job pushes the container image to ghcr.io via Kamal. The infra workflow (`deploy.yml`) only needs `contents: read`. The teardown workflow does not need `packages: write`.
+`packages: write` is required because the caller's deploy job pushes the container image to ghcr.io via Kamal. The infra workflow (`provision.yml`) only needs `contents: read`. The teardown workflow does not need `packages: write`.

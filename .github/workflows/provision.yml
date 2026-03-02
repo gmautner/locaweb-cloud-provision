@@ -12,7 +12,7 @@
 #   CLOUDSTACK_SECRET_KEY - CloudStack secret key
 #   SSH_PRIVATE_KEY       - SSH private key for VM access
 
-name: Deploy
+name: Provision
 
 permissions:
   contents: read
@@ -126,25 +126,25 @@ on:
     outputs:
       web_ip:
         description: "Web VM public IP"
-        value: ${{ jobs.deploy.outputs.web_ip }}
+        value: ${{ jobs.provision.outputs.web_ip }}
       worker_ips:
         description: "Worker VM public IPs (JSON array)"
-        value: ${{ jobs.deploy.outputs.worker_ips }}
+        value: ${{ jobs.provision.outputs.worker_ips }}
       accessory_ips:
         description: "Accessory VM public IPs (JSON object)"
-        value: ${{ jobs.deploy.outputs.accessory_ips }}
+        value: ${{ jobs.provision.outputs.accessory_ips }}
       infrastructure_changed:
         description: "true when fresh provision (cache miss), false when cached"
-        value: ${{ jobs.deploy.outputs.infrastructure_changed }}
+        value: ${{ jobs.provision.outputs.infrastructure_changed }}
       scaled_accessories:
         description: "JSON array of accessory names whose VMs were rescaled"
-        value: ${{ jobs.deploy.outputs.scaled_accessories }}
+        value: ${{ jobs.provision.outputs.scaled_accessories }}
       infra_env:
         description: "Multiline KEY=VALUE pairs for GITHUB_ENV (INFRA_WEB_IP, INFRA_<NAME>_IP, INFRA_WORKER_IP_<N>)"
-        value: ${{ jobs.deploy.outputs.infra_env }}
+        value: ${{ jobs.provision.outputs.infra_env }}
 
 jobs:
-  deploy:
+  provision:
     runs-on: ubuntu-latest
     outputs:
       web_ip: ${{ steps.outputs.outputs.web_ip }}
@@ -158,7 +158,7 @@ jobs:
       - name: Checkout infrastructure scripts
         uses: actions/checkout@v4
         with:
-          repository: gmautner/locaweb-cloud-deploy
+          repository: gmautner/locaweb-cloud-provision
           path: _infra
 
       - name: Compute infrastructure cache key

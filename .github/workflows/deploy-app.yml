@@ -1,10 +1,10 @@
 # Deploy Application Workflow
 #
-# Two-job workflow that provisions infrastructure (via deploy.yml) and then
+# Two-job workflow that provisions infrastructure (via provision.yml) and then
 # deploys the application with Kamal. This workflow simulates a caller for
 # internal development and E2E testing.
 #
-# For external callers: use deploy.yml directly for infrastructure, then
+# For external callers: use provision.yml directly for infrastructure, then
 # handle Kamal deployment in your own workflow job using the outputs.
 #
 # Required GitHub Secrets:
@@ -87,7 +87,7 @@ on:
 
 jobs:
   infra:
-    uses: ./.github/workflows/deploy.yml
+    uses: ./.github/workflows/provision.yml
     with:
       env_name: ${{ inputs.env_name }}
       zone: ${{ inputs.zone }}

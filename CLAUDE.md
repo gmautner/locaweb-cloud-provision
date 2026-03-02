@@ -42,9 +42,9 @@ When changing skills, always use the skill-creator skill to package the skill be
 
 The `.claude/skills/skill-creator/` skill was vendored from https://github.com/anthropics/skills/tree/main/skills/skill-creator. Check the source repo for updates before using it for new skill work.
 
-### locaweb-cloud-deploy
+### locaweb-cloud-provision
 
-The `.claude/skills/locaweb-cloud-deploy/` skill documents the reusable workflow contract for external repositories deploying to Locaweb Cloud. Keep it in sync when changing workflow inputs, secrets, outputs, or platform behavior.
+The `.claude/skills/locaweb-cloud-provision/` skill documents the reusable workflow contract for external repositories deploying to Locaweb Cloud. Keep it in sync when changing workflow inputs, secrets, outputs, or platform behavior.
 
 ## Release
 
@@ -70,4 +70,4 @@ Reserve the **infrastructure test** workflow (`test-infrastructure.yml`) for aft
 For quick manual verification against live infrastructure:
 
 - **CloudMonkey (cmk):** Available in the terminal for direct CloudStack API queries.
-- **SSH key:** `~/.ssh/locaweb-cloud-deploy-key` — use this to SSH into deployed VMs (e.g., `ssh -i ~/.ssh/locaweb-cloud-deploy-key root@<ip>`).
+- **SSH key:** `~/.ssh/locaweb-cloud-provision-key` — use this to SSH into deployed VMs (e.g., `ssh -i ~/.ssh/locaweb-cloud-provision-key root@<ip>`).

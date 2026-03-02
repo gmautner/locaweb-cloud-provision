@@ -50,7 +50,7 @@ jobs:
       - name: Checkout infrastructure scripts
         uses: actions/checkout@v4
         with:
-          repository: gmautner/locaweb-cloud-deploy
+          repository: gmautner/locaweb-cloud-provision
           path: _infra
 
       - name: Install and configure CloudMonkey

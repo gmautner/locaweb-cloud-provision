@@ -28,7 +28,7 @@ import traceback
 # Constants
 # ---------------------------------------------------------------------------
 
-REPO_NAME = os.environ.get("REPO_NAME", "locaweb-cloud-deploy")
+REPO_NAME = os.environ.get("REPO_NAME", "locaweb-cloud-provision")
 UNIQUE_ID = os.environ.get("UNIQUE_ID", "test")
 ENV_NAME = os.environ.get("ENV_NAME", "test")
 ZONE = os.environ.get("ZONE", "ZP01")
@@ -195,9 +195,9 @@ class InfrastructureVerifier:
         return self.verify_volume_exists(name) is None
 
     def verify_volume_tags(self, name):
-        """Check volume has the locaweb-cloud-deploy-id tag."""
+        """Check volume has the locaweb-cloud-provision-id tag."""
         data = cmk("list", "volumes", f"name={name}", "type=DATADISK",
-                    "tags[0].key=locaweb-cloud-deploy-id",
+                    "tags[0].key=locaweb-cloud-provision-id",
                     f"tags[0].value={self.network_name}",
                     "filter=id,name")
         if data:
@@ -209,7 +209,7 @@ class InfrastructureVerifier:
     def verify_no_tagged_volumes(self):
         """Ensure no volumes with our tag remain."""
         data = cmk("list", "volumes", "type=DATADISK",
-                    "tags[0].key=locaweb-cloud-deploy-id",
+                    "tags[0].key=locaweb-cloud-provision-id",
                     f"tags[0].value={self.network_name}",
                     "filter=id,name")
         if data and data.get("volume"):

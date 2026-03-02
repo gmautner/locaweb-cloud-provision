@@ -1,4 +1,4 @@
-# locaweb-cloud-deploy
+# locaweb-cloud-provision
 
 Reusable GitHub Actions workflows that deploy containerized web applications to Locaweb Cloud. Provisions CloudStack infrastructure (VMs, networks, disks, firewall rules, snapshots) and deploys containers via Kamal 2 with zero-downtime proxy.
 
@@ -10,25 +10,25 @@ This repo includes a [Claude Code skill](https://docs.anthropic.com/en/docs/clau
 
 ```bash
 # Download the skill from GitHub
-curl -L -o /tmp/locaweb-cloud-deploy.skill \
-  https://github.com/gmautner/locaweb-cloud-deploy/raw/main/locaweb-cloud-deploy.skill
+curl -L -o /tmp/locaweb-cloud-provision.skill \
+  https://github.com/gmautner/locaweb-cloud-provision/raw/main/locaweb-cloud-provision.skill
 
 # Extract into your repo's skill directory
 mkdir -p .claude/skills
-unzip /tmp/locaweb-cloud-deploy.skill -d .claude/skills/
+unzip /tmp/locaweb-cloud-provision.skill -d .claude/skills/
 ```
 
 Or with the GitHub CLI:
 
 ```bash
-gh api repos/gmautner/locaweb-cloud-deploy/contents/locaweb-cloud-deploy.skill \
-  --jq '.download_url' | xargs curl -L -o /tmp/locaweb-cloud-deploy.skill
+gh api repos/gmautner/locaweb-cloud-provision/contents/locaweb-cloud-provision.skill \
+  --jq '.download_url' | xargs curl -L -o /tmp/locaweb-cloud-provision.skill
 
 mkdir -p .claude/skills
-unzip /tmp/locaweb-cloud-deploy.skill -d .claude/skills/
+unzip /tmp/locaweb-cloud-provision.skill -d .claude/skills/
 ```
 
-Claude Code automatically detects the skill from `.claude/skills/locaweb-cloud-deploy/SKILL.md`. No other configuration is needed.
+Claude Code automatically detects the skill from `.claude/skills/locaweb-cloud-provision/SKILL.md`. No other configuration is needed.
 
 ### What the skill covers
 

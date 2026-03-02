@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The `locaweb-cloud-deploy` project needs to deploy containerized web applications to CloudStack virtual machines. Several deployment strategies were considered:
+The `locaweb-cloud-provision` project needs to deploy containerized web applications to CloudStack virtual machines. Several deployment strategies were considered:
 
 - **Kubernetes (k3s/k8s):** Full container orchestration with service discovery, auto-scaling, and a rich ecosystem. However, it introduces significant operational complexity -- a cluster must be provisioned, maintained, and upgraded. For single-app deployments on a small number of VMs, this is overkill.
 - **Docker Compose over SSH:** A lightweight approach where a `docker-compose.yml` is copied to the remote host and brought up via SSH. Simple, but lacks zero-downtime deployment, health checking, and structured accessory management.

@@ -6,17 +6,17 @@
 
 ## Context
 
-The deploy and teardown workflows were initially designed for internal use via `workflow_dispatch`. Goal #1 of the PRD requires them to be callable by external repositories, so any application repo can use locaweb-cloud-deploy as a turnkey deployment platform without duplicating infrastructure logic.
+The deploy and teardown workflows were initially designed for internal use via `workflow_dispatch`. Goal #1 of the PRD requires them to be callable by external repositories, so any application repo can use locaweb-cloud-provision as a turnkey deployment platform without duplicating infrastructure logic.
 
 GitHub Actions supports reusable workflows through the `workflow_call` trigger, which allows a workflow to be invoked by other workflows (in the same or different repositories) with typed inputs and secrets.
 
 ## Decision
 
-We add `workflow_call` alongside the existing `workflow_dispatch` trigger in both `deploy.yml` and `teardown.yml`, making them dual-trigger workflows that serve both internal and cross-repo use cases.
+We add `workflow_call` alongside the existing `workflow_dispatch` trigger in both `provision.yml` and `teardown.yml`, making them dual-trigger workflows that serve both internal and cross-repo use cases.
 
 ### Dual checkout pattern
 
-When called from an external repository, the runner's default checkout (`actions/checkout@v4`) retrieves the **caller's** application code (Dockerfile, source code). A second checkout retrieves the **infrastructure scripts** from `gmautner/locaweb-cloud-deploy` into a subdirectory called `_infra/`:
+When called from an external repository, the runner's default checkout (`actions/checkout@v4`) retrieves the **caller's** application code (Dockerfile, source code). A second checkout retrieves the **infrastructure scripts** from `gmautner/locaweb-cloud-provision` into a subdirectory called `_infra/`:
 
 ```yaml
 - name: Checkout application repository
@@ -25,15 +25,15 @@ When called from an external repository, the runner's default checkout (`actions
 - name: Checkout infrastructure scripts
   uses: actions/checkout@v4
   with:
-    repository: gmautner/locaweb-cloud-deploy
+    repository: gmautner/locaweb-cloud-provision
     path: _infra
 ```
 
 All script references in the workflow use `_infra/scripts/` paths. This works for both invocation modes:
-- **Internal** (`workflow_dispatch`): the first checkout gets locaweb-cloud-deploy itself (which contains the app and scripts), and the second checkout redundantly places the same scripts under `_infra/`. The `_infra/scripts/` paths resolve correctly.
+- **Internal** (`workflow_dispatch`): the first checkout gets locaweb-cloud-provision itself (which contains the app and scripts), and the second checkout redundantly places the same scripts under `_infra/`. The `_infra/scripts/` paths resolve correctly.
 - **External** (`workflow_call`): the first checkout gets the caller's app code, and the second checkout provides the infrastructure scripts. The `_infra/scripts/` paths resolve to the infra repo's scripts.
 
-The teardown workflow only needs the infrastructure scripts (no application code), so it performs a single checkout of `gmautner/locaweb-cloud-deploy` into `_infra/`.
+The teardown workflow only needs the infrastructure scripts (no application code), so it performs a single checkout of `gmautner/locaweb-cloud-provision` into `_infra/`.
 
 ### Input and secret contract
 
@@ -59,7 +59,7 @@ ENV_VARS: ${{ inputs.env_vars || vars.ENV_VARS }}
 
 ### Workflow outputs
 
-`deploy.yml` exposes outputs for the caller to consume:
+`provision.yml` exposes outputs for the caller to consume:
 - `web_ip`, `worker_ips`, `db_ip`, `db_internal_ip`
 
 These are mapped from the deploy job's step outputs.
@@ -74,7 +74,7 @@ These are mapped from the deploy job's step outputs.
 
 ### Negative
 
-- The `uses:` path is verbose (`gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@main`) — GitHub requires reusable workflows to live in `.github/workflows/`.
+- The `uses:` path is verbose (`gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@main`) — GitHub requires reusable workflows to live in `.github/workflows/`.
 - The dual checkout adds a redundant clone in internal mode (the infra scripts are checked out twice). This is harmless but slightly wasteful (~2s).
 - `workflow_call` does not support `choice` input types, so callers don't get dropdown menus for zone and plan inputs. Values are validated downstream by the scripts.
 - Secrets must be passed explicitly by external callers (no `secrets: inherit` across organizations).
@@ -91,7 +91,7 @@ permissions:
   packages: write
 jobs:
   deploy:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@main
+    uses: gmautner/locaweb-cloud-provision/.github/workflows/provision.yml@main
     with:
       zone: "ZP01"
       domain: "myapp.example.com"
