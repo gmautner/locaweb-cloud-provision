@@ -10,7 +10,7 @@
 name: Teardown
 
 concurrency:
-  group: deploy-${{ github.repository }}-${{ inputs.env_name || 'preview' }}
+  group: infra-${{ github.repository }}-${{ inputs.env_name || 'preview' }}
   cancel-in-progress: false
 
 on:

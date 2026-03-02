@@ -53,7 +53,7 @@ Use the sample FastAPI app in the root of the repo as the test application.
 ### Iterating on a feature
 
 1. Implement the change.
-2. Run the **deploy** workflow (`deploy.yml`) to deploy. Unless the change specifically requires a different configuration, use **one web VM, one worker VM, and one database VM**.
+2. Run the **deploy app** workflow (`deploy-app.yml`) to deploy. Unless the change specifically requires a different configuration, use **one web VM, one worker VM, and one database VM**.
 3. Verify the feature works as intended and nothing else is broken.
 4. If something is wrong, run the **teardown** workflow (`teardown.yml`) to clean up, iterate the code, and go back to step 2.
 

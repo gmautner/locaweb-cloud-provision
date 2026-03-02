@@ -23,7 +23,7 @@ This directory contains the Architectural Decision Records (ADRs) for the `locaw
 | [ADR-017](017-cross-zone-disaster-recovery.md) | Disaster Recovery via Snapshots | Accepted |
 | [ADR-018](018-fail2ban-ssh-protection.md) | fail2ban for SSH Brute-Force Protection | Accepted |
 | [ADR-019](019-dotenv-kamal-secrets-vars.md) | Consolidated Dotenv Format for Custom Container Environment Variables | Accepted |
-| [ADR-020](020-reusable-workflow-call.md) | Reusable Workflows via workflow_call with Dual Checkout | Accepted |
+| [ADR-020](020-reusable-workflow-call.md) | Reusable Workflows via workflow_call with Dual Checkout | Accepted (dual checkout in deploy.yml superseded by ADR-028) |
 | [ADR-021](021-environment-name-support.md) | Environment Name Support for Multi-Environment Deployments | Accepted |
 | [ADR-022](022-per-environment-secret-and-ssh-key-isolation.md) | Per-Environment Secret and SSH Key Isolation | Accepted |
 | [ADR-023](023-supabase-postgres-image.md) | Switch to supabase/postgres with Automated Tag Resolution | Rejected (see ADR-025) |
@@ -31,3 +31,4 @@ This directory contains the Architectural Decision Records (ADRs) for the `locaw
 | [ADR-025](025-supabase-postgres-hardcoded.md) | Switch to supabase/postgres with Hardcoded Version | Accepted |
 | [ADR-026](026-deploy-caching.md) | Input-Hash Caching for Faster Consecutive Deploys | Accepted |
 | [ADR-027](027-universal-tls.md) | Universal TLS via Let's Encrypt | Accepted |
+| [ADR-028](028-infra-app-separation.md) | Separate Infrastructure Provisioning from Application Deployment | Accepted |

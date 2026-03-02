@@ -99,19 +99,28 @@ Examples (with env_name `preview`):
 
 ### 1. GitHub Actions Workflows
 
-Four workflow files orchestrate the system. The deploy and teardown workflows support dual triggers: `workflow_dispatch` (manual/internal) and `workflow_call` (reusable/cross-repo). The test workflows use `workflow_dispatch` only.
+Five workflow files orchestrate the system. The deploy (infra) and teardown workflows support dual triggers: `workflow_dispatch` (manual/internal) and `workflow_call` (reusable/cross-repo). The deploy-app workflow uses `workflow_dispatch` only (for internal development and E2E testing). The test workflows use `workflow_dispatch` only.
 
-#### deploy.yml
+#### deploy.yml (Infrastructure Only)
 
-A single-job reusable workflow that provisions infrastructure and deploys the application sequentially. The job runs on `ubuntu-latest` and requires `contents: read` and `packages: write` permissions (the latter for ghcr.io image pushes).
+A single-job reusable workflow that provisions CloudStack infrastructure and outputs everything the caller needs to deploy with Kamal. This workflow is infra-only — it does **not** install Kamal, build Docker images, or deploy the application (see ADR-028). The job runs on `ubuntu-latest` and requires only `contents: read` permissions.
 
 **Triggers:** `workflow_dispatch` for direct use and `workflow_call` for invocation by external repositories. Both triggers accept the same inputs, though `workflow_call` uses `type: string` where `workflow_dispatch` uses `type: choice` (unsupported by `workflow_call`). Boolean and number types are shared as-is.
 
-**Dual checkout:** The workflow performs two checkouts: (1) `actions/checkout@v4` retrieves the caller's application code (Dockerfile, source), and (2) a second checkout retrieves infrastructure scripts from `gmautner/locaweb-cloud-deploy` into `_infra/`. All script paths use `_infra/scripts/` prefixes. In internal mode, the first checkout gets this repository itself and the second is redundant but harmless.
+**Single checkout:** The workflow checks out only the infrastructure scripts from `gmautner/locaweb-cloud-deploy` into `_infra/`. Application code is not needed at the infra layer — the caller handles that in its own deploy job.
 
-**Concurrency:** Shares a per-environment concurrency group (`deploy-${{ github.repository }}-${{ inputs.env_name }}`) with `teardown.yml` to prevent overlapping infrastructure operations on the same environment. Deploying to "staging" does not block "production". `cancel-in-progress` is false so queued runs wait rather than cancel.
+**Concurrency:** Shares a per-environment concurrency group (`infra-${{ github.repository }}-${{ inputs.env_name }}`) with `teardown.yml` to prevent overlapping infrastructure operations on the same environment. Deploying to "staging" does not block "production". `cancel-in-progress` is false so queued runs wait rather than cancel.
 
-**Workflow outputs** (exposed to callers): `web_ip`, `worker_ips`, `db_ip`, `db_internal_ip`.
+**Workflow outputs** (exposed to callers):
+
+| Output | Type | Description |
+|---|---|---|
+| `web_ip` | string | Public IP of the web VM |
+| `worker_ips` | JSON array | Public IPs of worker VMs |
+| `accessory_ips` | JSON object | Public IPs of accessory VMs (keyed by name) |
+| `infrastructure_changed` | `"true"/"false"` | `"true"` on fresh provision (cache miss), `"false"` on cache hit. Caller uses to decide `kamal setup` vs `kamal deploy`. |
+| `scaled_accessories` | JSON array | Names of accessories whose VMs were rescaled. Caller reboots these. |
+| `infra_env` | multiline string | `KEY=VALUE` pairs ready to load into `GITHUB_ENV`. Contains `INFRA_WEB_IP`, `INFRA_<NAME>_IP` per accessory, `INFRA_WORKER_IP_<N>` per worker. |
 
 **Workflow inputs** (all configurable at dispatch time):
 
@@ -119,46 +128,51 @@ A single-job reusable workflow that provisions infrastructure and deploys the ap
 |---|---|---|---|
 | `env_name` | string | `preview` | Environment name for resource isolation (e.g., preview, staging, production) |
 | `zone` | choice | `ZP01` | CloudStack availability zone |
-| `domain` | string | `""` | Custom domain (optional). TLS is always enabled via Let's Encrypt. |
 | `web_plan` | choice | `small` | VM size for the web server |
-| `blob_disk_size_gb` | string | `20` | Data disk size for blob storage |
-| `workers_enabled` | boolean | `false` | Whether to create worker VMs |
-| `workers_replicas` | string | `1` | Number of worker VMs |
-| `workers_cmd` | string | `sleep infinity` | Container command for workers |
+| `web_disk_size_gb` | number | `20` | Data disk size for blob storage |
+| `workers_replicas` | number | `0` | Number of worker VMs (0 = no workers) |
 | `workers_plan` | choice | `small` | VM size for workers |
-| `db_enabled` | boolean | `false` | Whether to create a database VM |
-| `db_plan` | choice | `medium` | VM size for the database |
-| `db_disk_size_gb` | string | `20` | Data disk size for PostgreSQL |
+| `accessories` | string | `[]` | Accessory VMs as JSON array |
+| `automatic_reboot` | boolean | `true` | Enable automatic reboot after unattended upgrades |
 | `recover` | boolean | `false` | Recover data disks from snapshots (disaster recovery) |
+| `automatic_reboot_time_utc` | string | `05:00` | Automatic reboot time in HH:MM UTC |
 
 **Step sequence:**
 
-1. **Validate secrets** -- If `db_enabled` is true, verifies that the `POSTGRES_PASSWORD` secret exists. Fails fast if missing.
-2. **Checkout application repository** -- `actions/checkout@v4` retrieves the caller's code (or this repo in internal mode).
-2b. **Checkout infrastructure scripts** -- `actions/checkout@v4` with `repository: gmautner/locaweb-cloud-deploy` and `path: _infra`.
-3. **Compute infrastructure cache key** -- Hashes `toJSON(inputs)` via `sha256sum` to produce a deterministic cache key that captures every workflow input.
-4. **Cache infrastructure state** -- Uses `actions/cache@v4` to cache `/tmp/provision-output.json` keyed by `infra-{repository}-{env_name}-{hash}`. Bypassed when `recover: true`. On cache hit, steps 5-8 and 11 are skipped (see ADR-026).
-5. **Build configuration** *(skipped on cache hit)* -- Inline Python assembles workflow inputs into a JSON config file at `/tmp/config.json`.
-6. **Extract SSH public key** -- Derives the public key from the `SSH_PRIVATE_KEY` secret using `ssh-keygen -y`.
-7. **Install CloudMonkey** *(skipped on cache hit)* -- Downloads the `cmk` binary, configures it with the CloudStack API endpoint (`painel-cloud.locaweb.com.br`), API key, and secret key. Runs `cmk sync` to populate the local API cache.
-8. **Provision infrastructure** *(skipped on cache hit)* -- Runs `scripts/provision_infrastructure.py` with the config JSON and public key. Outputs JSON to `/tmp/provision-output.json`.
-9. **Set outputs** -- Parses the provision output JSON (freshly created or restored from cache) and writes `web_ip`, `worker_ips`, `db_ip`, and `db_internal_ip` to `GITHUB_OUTPUT` for downstream consumption.
-10. **Upload artifact** -- Saves the provision output JSON as a GitHub artifact with 90-day retention.
-10b. **Print summary** -- Generates a Markdown table of provisioned resources in the GitHub Actions step summary.
-11. **Configure unattended upgrades** *(skipped on cache hit)* -- SSHes into all VMs and writes apt unattended-upgrades configuration.
-12. **Configure gem path + Cache Kamal gem** -- Sets `GEM_HOME=~/.gems` and adds `~/.gems/bin` to `PATH` for all subsequent steps. Uses `actions/cache@v4` to cache the gem directory with key `kamal-{runner.os}-v1`.
-13. **Install Kamal** *(skipped on gem cache hit)* -- `gem install kamal` (Kamal 2 from RubyGems).
-13b. **Verify Kamal** -- Runs `kamal version` to confirm the binary works.
-14. **Prepare SSH key** -- Copies the private key to `.kamal/ssh_key` with mode 600.
-15. **Create secrets file and env vars** -- Writes `.kamal/secrets` with `$VAR` references for `KAMAL_REGISTRY_PASSWORD`, and conditionally `POSTGRES_PASSWORD` and `DATABASE_URL` (if `db_enabled`). Parses the `SECRET_ENV_VARS` secret and `ENV_VARS` variable (both in dotenv format) using `python-dotenv`: secrets are added as `$VAR` references in `.kamal/secrets` and their resolved values are written to a sourceable env file for the deploy step; variables are written to a JSON file for the config generation step to merge as clear env vars.
-16. **Generate deploy config** -- Inline Python dynamically generates `config/deploy.yml` (the Kamal configuration) from the provision output, incorporating conditional sections for workers and database accessories. When the `domain` input is set, the proxy host is set to the domain; otherwise, nip.io wildcard DNS is used. SSL is always enabled via Let's Encrypt for both cases. Merges any custom variables from `ENV_VARS` as clear env vars and custom secrets from `SECRET_ENV_VARS` as secret env vars.
-17. **Deploy with Kamal** -- On first deploy (infrastructure cache miss), runs `kamal setup`, which installs Docker on all hosts, boots accessories (PostgreSQL), and deploys the application. On consecutive deploys (cache hit), runs `kamal deploy`, which skips Docker installation and accessory bootstrapping, only building and deploying the new application image. Both modes handle registry authentication, image build and push, and deployment behind kamal-proxy.
-18. **Reboot DB accessory if tuning changed** -- (Only when `db_enabled`) Compares the desired PostgreSQL `cmd` from the generated config against the running container's command via `docker inspect`. If the parameters differ (i.e., `db_plan` changed since the last deploy), runs `kamal accessory reboot db` to recreate the container with updated tuning. Skipped on first deploy (container was just created with correct parameters) and when the plan hasn't changed. This is necessary because `kamal setup` skips existing accessory containers, and Docker's `--restart unless-stopped` policy preserves the original command even across VM reboots.
-19. **Print deployment summary** -- Outputs commit SHA, image tag, application URL, and health check URL to the step summary.
+1. **Checkout infrastructure scripts** -- `actions/checkout@v4` with `repository: gmautner/locaweb-cloud-deploy` and `path: _infra`.
+2. **Compute infrastructure cache key** -- Hashes `toJSON(inputs)` via `sha256sum` to produce a deterministic cache key that captures every workflow input.
+3. **Cache infrastructure state** -- Uses `actions/cache@v4` to cache `/tmp/provision-output.json` keyed by `infra-{repository}-{env_name}-{hash}`. Bypassed when `recover: true`. On cache hit, steps 4-7 and 10 are skipped (see ADR-026).
+4. **Build configuration** *(skipped on cache hit)* -- Inline Python assembles workflow inputs into a JSON config file at `/tmp/config.json`.
+5. **Extract SSH public key** -- Derives the public key from the `SSH_PRIVATE_KEY` secret using `ssh-keygen -y`.
+6. **Install CloudMonkey** *(skipped on cache hit)* -- Downloads the `cmk` binary, configures it with the CloudStack API endpoint (`painel-cloud.locaweb.com.br`), API key, and secret key. Runs `cmk sync` to populate the local API cache.
+7. **Provision infrastructure** *(skipped on cache hit)* -- Runs `scripts/provision_infrastructure.py` with the config JSON and public key. Outputs JSON to `/tmp/provision-output.json`.
+8. **Set outputs** -- Parses the provision output JSON and writes all outputs including `infrastructure_changed`, `scaled_accessories`, and `infra_env` to `GITHUB_OUTPUT`.
+9. **Upload artifact** -- Saves the provision output JSON as a GitHub artifact with 90-day retention.
+9b. **Print summary** -- Generates a Markdown table of provisioned resources in the GitHub Actions step summary.
+10. **Configure unattended upgrades** *(skipped on cache hit)* -- SSHes into all VMs and writes apt unattended-upgrades configuration.
+
+#### deploy-app.yml (Internal Caller Simulation)
+
+A two-job `workflow_dispatch` workflow for internal development and E2E testing. It calls `deploy.yml` for infrastructure, then handles Kamal deployment in a separate job using the infra outputs.
+
+**Job 1 (`infra`):** Calls `deploy.yml` as a reusable workflow, forwarding all infrastructure inputs and secrets.
+
+**Job 2 (`deploy`, needs: infra):**
+
+1. **Checkout application repository** -- Retrieves the application code (this repo for internal use).
+2. **Load infrastructure environment** -- Writes `needs.infra.outputs.infra_env` into `GITHUB_ENV`.
+3. **Set repo identity** -- Exports `REPO_NAME`, `REPO_FULL`, `REPO_OWNER` for Kamal ERB config.
+4. **Install Kamal** -- Gem path, caching, install, verify.
+5. **Prepare SSH key** -- Reads `SSH_PRIVATE_KEY` from secrets (separate runner from infra job).
+6. **Expose GHA runtime for Docker cache** -- `actions/github-script@v7`.
+7. **Export application secrets** -- Parses `inputs.secret_env_vars` via python-dotenv, writes to `GITHUB_ENV`.
+8. **Deploy with Kamal** -- Uses `infrastructure_changed` output to decide `kamal setup` vs `kamal deploy`.
+9. **Reboot scaled accessories** -- Iterates `scaled_accessories` output.
+10. **Print deployment summary** -- Reads `INFRA_WEB_IP` from env.
 
 #### teardown.yml
 
-A reusable workflow that destroys all CloudStack resources in reverse creation order. Supports both `workflow_dispatch` and `workflow_call` triggers. Uses the same CloudMonkey installation pattern as the deploy workflow. Shares the per-environment `deploy-${{ github.repository }}-${{ inputs.env_name }}` concurrency group with `deploy.yml`.
+A reusable workflow that destroys all CloudStack resources in reverse creation order. Supports both `workflow_dispatch` and `workflow_call` triggers. Uses the same CloudMonkey installation pattern as the deploy workflow. Shares the per-environment `infra-${{ github.repository }}-${{ inputs.env_name }}` concurrency group with `deploy.yml`.
 
 **Dual checkout:** Unlike deploy.yml, the teardown workflow only needs the infrastructure scripts (no application code), so it performs a single checkout of `gmautner/locaweb-cloud-deploy` into `_infra/`.
 
@@ -206,9 +220,9 @@ The test workflow generates a fresh ed25519 SSH key pair per run to avoid CloudS
 
 #### e2e-test.yml
 
-An application-focused E2E test workflow that triggers the **real** `deploy.yml` workflow, waits for it to complete, then verifies the deployed application works correctly. Unlike `test-infrastructure.yml` which validates CloudStack resources, this workflow validates the full deployment pipeline including Kamal, container deployment, and application behavior.
+An application-focused E2E test workflow that triggers the **real** `deploy-app.yml` workflow, waits for it to complete, then verifies the deployed application works correctly. Unlike `test-infrastructure.yml` which validates CloudStack resources, this workflow validates the full deployment pipeline including Kamal, container deployment, and application behavior.
 
-**Concurrency:** Uses its own concurrency group (`e2e-test-${{ github.repository }}`), separate from the `deploy-${{ github.repository }}` group shared by `deploy.yml` and `teardown.yml`. This prevents deadlocks: the E2E workflow triggers deploy/teardown via `gh workflow run`, and if they shared a group, the triggered workflow would queue behind the E2E run that's waiting for it.
+**Concurrency:** Uses its own concurrency group (`e2e-test-${{ github.repository }}`), separate from the `infra-${{ github.repository }}` group shared by `deploy.yml` and `teardown.yml`. This prevents deadlocks: the E2E workflow triggers deploy-app/teardown via `gh workflow run`, and if they shared a group, the triggered workflow would queue behind the E2E run that's waiting for it.
 
 **Permissions:** `contents: read`, `actions: write` (the latter is needed to trigger workflows via the `gh` CLI).
 

@@ -35,7 +35,7 @@ These constraints apply to **every** application deployed to this platform. Comm
 - **TLS always enabled**: All deployments (nip.io and custom domain) use HTTPS via Let's Encrypt.
 - **Single PostgreSQL instance**: No read replicas or multiple databases.
 - **Workers use the same Docker image** with a different command (`workers_cmd`).
-- **No Docker build in the caller workflow**: The reusable deploy workflow builds, pushes, and deploys the Docker image internally via Kamal. The caller workflow must **not** include any Docker build or push steps (no `docker/build-push-action`, no `docker build`, no `docker push`, no login to ghcr.io). The caller just calls the reusable workflow — Kamal handles the entire build-push-deploy lifecycle using the Dockerfile at the repo root.
+- **Kamal handles Docker build/push/deploy**: The caller's deploy job runs Kamal, which builds the Docker image from the Dockerfile at the repo root, pushes it to ghcr.io, and deploys to the VMs. The caller workflow should **not** include separate Docker build or push steps (no `docker/build-push-action`, no `docker build`, no `docker push`, no login to ghcr.io) — Kamal handles the entire build-push-deploy lifecycle.
 
 If the application's current design conflicts with any of these (e.g., depends on Redis, listens on port 3000, uses multiple Dockerfiles), resolve the conflict **before** proceeding with deployment setup.
 
@@ -44,14 +44,19 @@ If the application's current design conflicts with any of these (e.g., depends o
 ```
 Caller repo                          gmautner/locaweb-cloud-deploy
 +-----------------------+            +-----------------------------+
-| .github/workflows/    |  calls     | .github/workflows/          |
-|   deploy.yml        -------->      |   deploy.yml (provisions    |
-|   teardown.yml      -------->      |     infra + deploys app)    |
-+-----------------------+            |   teardown.yml (destroys    |
-| Dockerfile (root)     |            |     all resources)          |
-| Source code           |            +-----------------------------+
+| .github/workflows/    |            | .github/workflows/          |
+|   deploy.yml          |            |   deploy.yml (provisions    |
+|     job: infra  ------------>      |     infrastructure only)    |
+|     job: deploy       |            |   teardown.yml (destroys    |
+|       (Kamal deploy)  |            |     all resources)          |
+|   teardown.yml  ------------>      +-----------------------------+
++-----------------------+
+| Dockerfile (root)     |
+| Source code           |
 +-----------------------+
 ```
+
+The caller uses a two-job pattern: the `infra` job calls `deploy.yml` for infrastructure provisioning, and the `deploy` job handles Kamal deployment using the infra outputs (`infra_env`, `infrastructure_changed`, `scaled_accessories`).
 
 ## Setup Procedure
 

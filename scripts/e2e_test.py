@@ -375,14 +375,14 @@ def download_artifact(run_id, artifact_name, dest_dir="/tmp"):
 
 
 def trigger_deploy(inputs, ref=None):
-    """Trigger deploy.yml, wait for completion, return provision output dict."""
-    print("\n  --- Triggering deploy workflow ---")
+    """Trigger deploy-app.yml, wait for completion, return provision output dict."""
+    print("\n  --- Triggering deploy-app workflow ---")
     # Pass SECRET_ENV_VARS as a workflow_dispatch input (mirrors how callers
     # pass it via workflow_call secrets).
     secret_env_vars = os.environ.get("SECRET_ENV_VARS", "")
     if secret_env_vars:
         inputs["secret_env_vars"] = secret_env_vars
-    run_id = trigger_workflow("deploy.yml", inputs, ref=ref)
+    run_id = trigger_workflow("deploy-app.yml", inputs, ref=ref)
     wait_for_run(run_id)
     art_dir = download_artifact(run_id, "provision-output")
     output_path = os.path.join(art_dir, "provision-output.json")

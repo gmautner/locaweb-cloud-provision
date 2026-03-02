@@ -1,27 +1,24 @@
-# Deploy Workflow
+# Infrastructure Provisioning Workflow
 #
-# Provisions CloudStack infrastructure and deploys with Kamal.
+# Provisions CloudStack infrastructure (VMs, networks, disks, IPs, firewall rules)
+# and outputs everything the caller needs to deploy with Kamal.
 #
-# Required GitHub Secrets (infrastructure):
+# This workflow is infra-only — it does NOT install Kamal, build Docker images,
+# or deploy the application. The caller handles application deployment using
+# the outputs from this workflow.
+#
+# Required GitHub Secrets:
 #   CLOUDSTACK_API_KEY    - CloudStack API key
 #   CLOUDSTACK_SECRET_KEY - CloudStack secret key
 #   SSH_PRIVATE_KEY       - SSH private key for VM access
-#
-# Required GitHub Secrets (application — set in the caller repo):
-#   App secrets (POSTGRES_PASSWORD, DATABASE_URL, etc.) are GitHub Secrets
-#   in the caller repo. Kamal picks them up via .kamal/secrets references.
-#   The workflow exports SECRET_ENV_VARS entries as shell env vars for Kamal.
-#
-# Note: GITHUB_TOKEN is used for ghcr.io registry access (no separate REGISTRY_TOKEN needed).
 
 name: Deploy
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: deploy-${{ github.repository }}-${{ inputs.env_name || 'preview' }}
+  group: infra-${{ github.repository }}-${{ inputs.env_name || 'preview' }}
   cancel-in-progress: false
 
 on:
@@ -86,10 +83,6 @@ on:
         description: "Automatic reboot time in HH:MM UTC"
         required: false
         default: "05:00"
-      secret_env_vars:
-        description: "App secrets as KEY=VALUE lines (workflow_dispatch only — callers use workflow_call secrets)"
-        required: false
-        default: ""
 
   workflow_call:
     inputs:
@@ -130,8 +123,6 @@ on:
         required: true
       SSH_PRIVATE_KEY:
         required: true
-      SECRET_ENV_VARS:
-        required: false
     outputs:
       web_ip:
         description: "Web VM public IP"
@@ -142,6 +133,15 @@ on:
       accessory_ips:
         description: "Accessory VM public IPs (JSON object)"
         value: ${{ jobs.deploy.outputs.accessory_ips }}
+      infrastructure_changed:
+        description: "true when fresh provision (cache miss), false when cached"
+        value: ${{ jobs.deploy.outputs.infrastructure_changed }}
+      scaled_accessories:
+        description: "JSON array of accessory names whose VMs were rescaled"
+        value: ${{ jobs.deploy.outputs.scaled_accessories }}
+      infra_env:
+        description: "Multiline KEY=VALUE pairs for GITHUB_ENV (INFRA_WEB_IP, INFRA_<NAME>_IP, INFRA_WORKER_IP_<N>)"
+        value: ${{ jobs.deploy.outputs.infra_env }}
 
 jobs:
   deploy:
@@ -150,11 +150,11 @@ jobs:
       web_ip: ${{ steps.outputs.outputs.web_ip }}
       worker_ips: ${{ steps.outputs.outputs.worker_ips }}
       accessory_ips: ${{ steps.outputs.outputs.accessory_ips }}
+      infrastructure_changed: ${{ steps.outputs.outputs.infrastructure_changed }}
+      scaled_accessories: ${{ steps.outputs.outputs.scaled_accessories }}
+      infra_env: ${{ steps.outputs.outputs.infra_env }}
 
     steps:
-      - name: Checkout application repository
-        uses: actions/checkout@v4
-
       - name: Checkout infrastructure scripts
         uses: actions/checkout@v4
         with:
@@ -234,17 +234,38 @@ jobs:
 
       - name: Set outputs
         id: outputs
+        env:
+          INFRA_CACHE_HIT: ${{ steps.infra-cache.outputs.cache-hit }}
         run: |
           python3 << 'PYEOF'
           import json, os
           d = json.load(open('/tmp/provision-output.json'))
           accessories = d.get('accessories', {})
-          # Build accessory IPs JSON
+          cache_hit = os.environ.get('INFRA_CACHE_HIT', '') == 'true'
+
           acc_ips = {name: data.get('ip', '') for name, data in accessories.items()}
+          scaled = [name for name, data in accessories.items() if data.get('vm_scaled')]
+
+          env_lines = []
+          web_ip = d.get('web_ip', '')
+          if web_ip:
+              env_lines.append(f'INFRA_WEB_IP={web_ip}')
+          for name, data in sorted(accessories.items()):
+              ip = data.get('ip', '')
+              if ip:
+                  env_lines.append(f'INFRA_{name.upper()}_IP={ip}')
+          for i, ip in enumerate(d.get('worker_ips', [])):
+              env_lines.append(f'INFRA_WORKER_IP_{i}={ip}')
+
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"web_ip={d.get('web_ip', '')}\n")
+              f.write(f"web_ip={web_ip}\n")
               f.write(f"worker_ips={json.dumps(d.get('worker_ips', []))}\n")
               f.write(f"accessory_ips={json.dumps(acc_ips)}\n")
+              f.write(f"infrastructure_changed={'false' if cache_hit else 'true'}\n")
+              f.write(f"scaled_accessories={json.dumps(scaled)}\n")
+              f.write("infra_env<<INFRA_ENV_EOF\n")
+              f.write("\n".join(env_lines) + "\n")
+              f.write("INFRA_ENV_EOF\n")
           PYEOF
 
       - name: Upload provisioning output
@@ -278,137 +299,3 @@ jobs:
             --provision-output /tmp/provision-output.json \
             --automatic-reboot "${{ inputs.automatic_reboot }}" \
             --reboot-time "${{ inputs.automatic_reboot_time_utc }}"
-
-      - name: Configure gem path
-        run: |
-          echo "GEM_HOME=$HOME/.gems" >> "$GITHUB_ENV"
-          echo "$HOME/.gems/bin" >> "$GITHUB_PATH"
-
-      - name: Cache Kamal gem
-        id: kamal-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.gems
-          key: kamal-${{ runner.os }}-v1
-
-      - name: Install Kamal
-        if: steps.kamal-cache.outputs.cache-hit != 'true'
-        run: gem install kamal --no-document
-
-      - name: Verify Kamal
-        run: kamal version
-
-      - name: Prepare SSH key for Kamal
-        run: |
-          mkdir -p .kamal
-          cp /tmp/ssh_key .kamal/ssh_key
-          chmod 600 .kamal/ssh_key
-
-      - name: Expose GitHub Actions runtime for Docker cache
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const vars = [
-              'ACTIONS_CACHE_URL',
-              'ACTIONS_RUNTIME_TOKEN',
-              'ACTIONS_RUNTIME_URL',
-              'ACTIONS_RESULTS_URL',
-              'ACTIONS_CACHE_SERVICE_V2',
-            ];
-            for (const v of vars) {
-              const val = process.env[v];
-              if (val) core.exportVariable(v, val);
-            }
-
-      - name: Deploy with Kamal
-        env:
-          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS || inputs.secret_env_vars }}
-          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          INFRA_CACHE_HIT: ${{ steps.infra-cache.outputs.cache-hit }}
-        run: |
-          pip install -q python-dotenv
-
-          # Export app secrets from SECRET_ENV_VARS using python-dotenv
-          eval "$(python3 -c "
-          from dotenv import dotenv_values
-          from io import StringIO
-          import os, shlex
-          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
-              print(f'export {k}={shlex.quote(v)}')
-          ")"
-
-          # Infrastructure bindings (for Kamal ERB in destination file)
-          export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
-          for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
-            export "INFRA_${name^^}_IP"=$(jq -r ".accessories.${name}.ip" /tmp/provision-output.json)
-          done
-          for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
-            export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
-          done
-
-          # Repo identity (for Kamal ERB in destination file)
-          export REPO_NAME=${{ github.event.repository.name }}
-          export REPO_FULL=${{ github.repository }}
-          export REPO_OWNER=${{ github.repository_owner }}
-
-          if [ "$INFRA_CACHE_HIT" = "true" ]; then
-            echo "Infrastructure cached — running kamal deploy"
-            kamal deploy -d ${{ inputs.env_name || 'preview' }}
-          else
-            echo "Fresh infrastructure — running kamal setup"
-            kamal setup -d ${{ inputs.env_name || 'preview' }}
-          fi
-
-      - name: Reboot accessories if plan changed
-        env:
-          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS || inputs.secret_env_vars }}
-          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pip install -q python-dotenv
-
-          # Export app secrets
-          eval "$(python3 -c "
-          from dotenv import dotenv_values
-          from io import StringIO
-          import os, shlex
-          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
-              print(f'export {k}={shlex.quote(v)}')
-          ")"
-
-          # Infrastructure bindings
-          export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
-          for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
-            export "INFRA_${name^^}_IP"=$(jq -r ".accessories.${name}.ip" /tmp/provision-output.json)
-          done
-          for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
-            export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
-          done
-
-          export REPO_NAME=${{ github.event.repository.name }}
-          export REPO_FULL=${{ github.repository }}
-          export REPO_OWNER=${{ github.repository_owner }}
-
-          # Reboot accessories whose VMs were rescaled
-          for name in $(jq -r '.accessories | to_entries[] | select(.value.vm_scaled) | .key' /tmp/provision-output.json 2>/dev/null); do
-            echo "Accessory '$name' VM was rescaled, rebooting..."
-            kamal accessory reboot $name -d ${{ inputs.env_name || 'preview' }}
-          done
-
-      - name: Print Kamal deployment summary
-        run: |
-          python3 << 'PYEOF' >> $GITHUB_STEP_SUMMARY
-          import json, os
-          d = json.load(open('/tmp/provision-output.json'))
-          web_ip = d.get('web_ip', 'N/A')
-          sha = os.environ.get('GITHUB_SHA', 'unknown')[:7]
-          repo = os.environ.get('GITHUB_REPOSITORY', '')
-          print('')
-          print('## Kamal Deployment Complete')
-          print('')
-          print(f'- **Commit:** `{sha}`')
-          print(f'- **Image:** `ghcr.io/{repo}:{sha}`')
-          print(f'- **Web IP:** `{web_ip}`')
-          print(f'- **TLS:** Let\'s Encrypt (automatic)')
-          print('')
-          print('The app URL depends on the `proxy.host` in your Kamal config (nip.io or custom domain).')
-          PYEOF

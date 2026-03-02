@@ -1,6 +1,6 @@
 # E2E Test Workflow
 #
-# Triggers the real deploy.yml workflow, waits for it, then verifies
+# Triggers the real deploy-app.yml workflow, waits for it, then verifies
 # the deployed application works correctly (HTTP, SSH, disk mounts, env vars).
 #
 # Uses its own concurrency group to avoid deadlocking with deploy/teardown.

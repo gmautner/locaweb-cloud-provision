@@ -104,7 +104,7 @@ Users of the workflow (whether human or agent) should not need to interact direc
 | ID | Requirement |
 |----|-------------|
 | FR-25 | An infrastructure test workflow (`test-infrastructure.yml`) shall validate all provisioning scenarios (resource creation, scale-up/down, teardown) using CloudStack API verification and SSH connectivity checks. |
-| FR-33 | An E2E test workflow (`e2e-test.yml`) shall trigger the real `deploy.yml` workflow, wait for completion, and verify application behavior: HTTP health checks, page content, database operations, file uploads, SSH mount points, disk sizes, and container environment variables. |
+| FR-33 | An E2E test workflow (`e2e-test.yml`) shall trigger the real `deploy-app.yml` workflow, wait for completion, and verify application behavior: HTTP health checks, page content, database operations, file uploads, SSH mount points, disk sizes, and container environment variables. |
 | FR-34 | The E2E test workflow shall support selectable scenarios: `complete` (full stack), `web-only`, `scale-up`, `scale-down`, and `all`. |
 | FR-35 | The E2E test workflow shall use a separate concurrency group from deploy/teardown to prevent deadlocks when triggering workflows. |
 
@@ -140,7 +140,7 @@ The deployed application must meet the following contract:
 | NFR-04 | **Security.** The container registry (ghcr.io) shall be accessed using the automatic GITHUB_TOKEN; no separate registry credentials are required. |
 | NFR-05 | **Performance.** The provisioning step should complete within a reasonable time frame, limited primarily by CloudStack API response times. |
 | NFR-06 | **Observability.** All provisioning and deployment steps shall produce structured log output in the GitHub Actions workflow, making it straightforward to diagnose failures. |
-| NFR-07 | **Separation of concerns.** Infrastructure provisioning (CloudStack-specific) and container deployment (Kamal) are clearly separated. This is a technical design decision, not aimed at cloud portability. |
+| NFR-07 | **Separation of concerns.** Infrastructure provisioning (CloudStack-specific) and container deployment (Kamal) are clearly separated into distinct workflow jobs. The infra workflow (`deploy.yml`) outputs everything the caller needs; application deployment (Kamal) is handled by the caller (see ADR-028). This is a technical design decision, not aimed at cloud portability. |
 
 ---
 
@@ -177,7 +177,7 @@ GitHub Actions (workflow_dispatch)
 
 ### Component Responsibilities
 
-- **GitHub Actions workflows** orchestrate the entire lifecycle: provisioning, deployment, testing, and teardown.
+- **GitHub Actions workflows** orchestrate the entire lifecycle: infrastructure provisioning (`deploy.yml`), application deployment (`deploy-app.yml` for internal use, or the caller's own workflow for external use), testing, and teardown.
 - **`scripts/provision_infrastructure.py`** calls the CloudStack API via CloudMonkey (`cmk`) to create and configure all infrastructure resources idempotently.
 - **Kamal 2** handles Docker installation on fresh VMs, image building and pushing to ghcr.io, container deployment with zero-downtime proxy, and accessory (PostgreSQL) management.
 - **Cloud-init scripts** (`scripts/userdata/`) run on first boot to prepare data disks (format, mount).
@@ -219,14 +219,7 @@ When using the workflows internally, the following secrets are configured in thi
 | `POSTGRES_PASSWORD` | When `db_enabled` | PostgreSQL superuser password. Validated at workflow start; workflow fails fast if missing. |
 | `GITHUB_TOKEN` | Automatic | Provided automatically by GitHub Actions. Used for pushing container images to ghcr.io and for triggering workflows from the E2E test. |
 
-Additionally, the following consolidated entries provide custom container environment variables (in dotenv format):
-
-| Entry | Type | Description |
-|-------|------|-------------|
-| `ENV_VARS` | Variable | Dotenv-formatted key=value pairs for clear container env vars. E2E tests require `MY_VAR=...`. |
-| `SECRET_ENV_VARS` | Secret | Dotenv-formatted key=value pairs for secret container env vars. E2E tests require `MY_SECRET=...`. |
-
-When called externally, `ENV_VARS` is passed as a workflow input (`env_vars`), and `SECRET_ENV_VARS` is passed as a workflow secret. Internally, `ENV_VARS` falls back to the repository variable `vars.ENV_VARS` when the input is empty.
+Application secrets (e.g., `POSTGRES_PASSWORD`, custom API keys) are no longer passed through the infrastructure workflow. Instead, the caller maps them directly as environment variables in its own deploy job. The `SECRET_ENV_VARS` secret has been removed from `deploy.yml` (see ADR-028). For E2E testing, `deploy-app.yml` retains a `secret_env_vars` workflow_dispatch input for compatibility.
 
 ---
 
@@ -240,6 +233,8 @@ External repositories invoke the deploy and teardown workflows via `workflow_cal
 
 ### Caller deploy workflow example
 
+External repositories use a two-job pattern: the first job calls `deploy.yml` for infrastructure, and the second job handles Kamal deployment using the infra outputs.
+
 ```yaml
 # .github/workflows/deploy.yml
 name: Deploy
@@ -249,24 +244,27 @@ permissions:
   contents: read
   packages: write
 jobs:
-  deploy:
+  infra:
     uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@main
     with:
       env_name: "production"
       zone: "ZP01"
-      domain: "myapp.example.com"
       web_plan: "small"
-      db_enabled: true
-      db_plan: "medium"
-      env_vars: |-
-        APP_ENV=production
+      accessories: '[{"name": "db", "plan": "medium", "disk_size_gb": 20}]'
     secrets:
       CLOUDSTACK_API_KEY: ${{ secrets.CLOUDSTACK_API_KEY }}
       CLOUDSTACK_SECRET_KEY: ${{ secrets.CLOUDSTACK_SECRET_KEY }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-      SECRET_ENV_VARS: |-
-        STRIPE_KEY=${{ secrets.STRIPE_KEY }}
+
+  deploy:
+    needs: infra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ needs.infra.outputs.infra_env }}" >> "$GITHUB_ENV"
+      # ... Install Kamal, prepare SSH key, deploy with Kamal
+      # Use needs.infra.outputs.infrastructure_changed to decide kamal setup vs deploy
+      # Use needs.infra.outputs.scaled_accessories to reboot rescaled accessories
 ```
 
 ### Caller teardown workflow example
@@ -328,7 +326,8 @@ locaweb-cloud-deploy/
 |-- requirements.txt                    Python dependencies
 |-- .github/
 |   `-- workflows/
-|       |-- deploy.yml                  Provision + deploy workflow
+|       |-- deploy.yml                  Infrastructure provisioning workflow (infra-only)
+|       |-- deploy-app.yml             Internal caller: infra + Kamal deployment
 |       |-- teardown.yml                Destroy all resources workflow
 |       |-- test-infrastructure.yml     Infrastructure validation tests
 |       `-- e2e-test.yml               E2E application test workflow
