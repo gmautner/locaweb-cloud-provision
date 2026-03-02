@@ -90,10 +90,11 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push origin --delete "$branch" 2>/dev/null || true
           git checkout -b "$branch"
           git add config/deploy.preview.yml config/deploy.e2etest.yml docs/architecture.md
           git commit -m "Bump supabase/postgres ${current} → ${latest}"
-          git push -u --force origin "$branch"
+          git push -u origin "$branch"
 
           gh pr create \
             --title "Bump supabase/postgres ${current} → ${latest}" \
