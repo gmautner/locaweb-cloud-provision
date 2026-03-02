@@ -146,16 +146,24 @@ class InfrastructureVerifier:
     # --- VMs ---
 
     def verify_vm_exists(self, name):
-        """Return VM dict if found, else None."""
+        """Return VM dict if found, else None.
+
+        Ignores VMs in Destroyed/Expunging states.
+        """
         data = cmk("list", "virtualmachines", f"name={name}",
                     "filter=id,name,state")
         if data:
             for vm in data.get("virtualmachine", []):
-                if vm["name"] == name:
+                if vm["name"] == name and vm.get("state") not in ("Destroyed", "Expunging"):
                     return vm
         return None
 
-    def verify_vm_absent(self, name):
+    def verify_vm_absent(self, name, retries=6, interval=5):
+        """Verify a VM is gone, with retries for expunge delay."""
+        for _ in range(retries):
+            if self.verify_vm_exists(name) is None:
+                return True
+            time.sleep(interval)
         return self.verify_vm_exists(name) is None
 
     def count_worker_vms(self):
