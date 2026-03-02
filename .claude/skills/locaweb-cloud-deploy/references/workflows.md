@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v0.2
+    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
     with:
       env_name: "preview"
       zone: "ZP01"
@@ -154,7 +154,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v0.2
+    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
     with:
       env_name: "production"
       zone: "ZP01"
@@ -302,7 +302,7 @@ permissions:
 
 jobs:
   infra:
-    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v0.2
+    uses: gmautner/locaweb-cloud-deploy/.github/workflows/deploy.yml@v1
     with:
       env_name: "preview"                    # Optional, default: "preview"
       zone: "ZP01"                           # Optional, default: "ZP01" (options: ZP01, ZP02)
