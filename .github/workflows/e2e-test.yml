@@ -104,19 +104,13 @@ jobs:
               gh cache delete "$key" -R "${{ github.repository }}" || true
             done
 
-      - name: Compose SECRET_ENV_VARS from individual secrets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-        run: |
-          printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgres://postgres:%s@db:5432/postgres\nMY_SECRET=e2e-test-secret\n' \
-            "$POSTGRES_PASSWORD" "$POSTGRES_PASSWORD" \
-            | gh secret set SECRET_ENV_VARS -R "${{ github.repository }}"
-          echo "Composed SECRET_ENV_VARS from individual secrets."
-
       - name: Run E2E tests
         env:
           GH_TOKEN: ${{ github.token }}
+          SECRET_ENV_VARS: |-
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            DATABASE_URL=postgres://postgres:${{ secrets.POSTGRES_PASSWORD }}@db:5432/postgres
+            MY_SECRET=e2e-test-secret
           REPO_FULL: ${{ github.repository }}
           REPO_NAME: ${{ github.event.repository.name }}
           REPO_ID: ${{ github.repository_id }}
@@ -146,8 +140,6 @@ jobs:
           git branch -r --list 'origin/e2e-test-*' | while read -r b; do
             git push origin --delete "${b#origin/}" || true
           done
-          # Delete the composed SECRET_ENV_VARS repo secret
-          gh secret delete SECRET_ENV_VARS -R "${{ github.repository }}" || true
 
       - name: Test summary
         if: always()

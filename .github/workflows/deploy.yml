@@ -86,6 +86,10 @@ on:
         description: "Automatic reboot time in HH:MM UTC"
         required: false
         default: "05:00"
+      secret_env_vars:
+        description: "App secrets as KEY=VALUE lines (workflow_dispatch only — callers use workflow_call secrets)"
+        required: false
+        default: ""
 
   workflow_call:
     inputs:
@@ -318,7 +322,7 @@ jobs:
 
       - name: Deploy with Kamal
         env:
-          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS }}
+          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS || inputs.secret_env_vars }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           INFRA_CACHE_HIT: ${{ steps.infra-cache.outputs.cache-hit }}
         run: |
@@ -357,7 +361,7 @@ jobs:
 
       - name: Reboot accessories if plan changed
         env:
-          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS }}
+          SECRET_ENV_VARS: ${{ secrets.SECRET_ENV_VARS || inputs.secret_env_vars }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install -q python-dotenv
