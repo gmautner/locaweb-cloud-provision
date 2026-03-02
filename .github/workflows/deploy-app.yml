@@ -92,12 +92,12 @@ jobs:
       env_name: ${{ inputs.env_name }}
       zone: ${{ inputs.zone }}
       web_plan: ${{ inputs.web_plan }}
-      web_disk_size_gb: ${{ inputs.web_disk_size_gb }}
-      workers_replicas: ${{ inputs.workers_replicas }}
+      web_disk_size_gb: ${{ fromJSON(inputs.web_disk_size_gb) }}
+      workers_replicas: ${{ fromJSON(inputs.workers_replicas) }}
       workers_plan: ${{ inputs.workers_plan }}
       accessories: ${{ inputs.accessories }}
-      automatic_reboot: ${{ inputs.automatic_reboot }}
-      recover: ${{ inputs.recover }}
+      automatic_reboot: ${{ fromJSON(inputs.automatic_reboot) }}
+      recover: ${{ fromJSON(inputs.recover) }}
       automatic_reboot_time_utc: ${{ inputs.automatic_reboot_time_utc }}
     secrets:
       CLOUDSTACK_API_KEY: ${{ secrets.CLOUDSTACK_API_KEY }}
