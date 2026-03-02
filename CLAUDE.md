@@ -46,6 +46,10 @@ The `.claude/skills/skill-creator/` skill was vendored from https://github.com/a
 
 The `.claude/skills/locaweb-cloud-deploy/` skill documents the reusable workflow contract for external repositories deploying to Locaweb Cloud. Keep it in sync when changing workflow inputs, secrets, outputs, or platform behavior.
 
+## Release
+
+After every `git push` to the remote, run the `/release` command to move the `v1` floating tag to the new HEAD.
+
 ## Development Process
 
 Use the sample FastAPI app in the root of the repo as the test application.
