@@ -328,6 +328,15 @@ jobs:
         run: |
           pip install -q python-dotenv
 
+          # Export app secrets from SECRET_ENV_VARS using python-dotenv
+          eval "$(python3 -c "
+          from dotenv import dotenv_values
+          from io import StringIO
+          import os, shlex
+          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
+              print(f'export {k}={shlex.quote(v)}')
+          ")"
+
           # Infrastructure bindings (for Kamal ERB in destination file)
           export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
           for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
@@ -336,19 +345,6 @@ jobs:
           for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
             export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
           done
-
-          # Export app secrets from SECRET_ENV_VARS using python-dotenv.
-          # Values may reference $INFRA_<NAME>_IP variables (resolved above).
-          eval "$(python3 << 'PYEOF'
-          from dotenv import dotenv_values
-          from io import StringIO
-          import os, re, shlex
-          infra = {k: v for k, v in os.environ.items() if k.startswith('INFRA_')}
-          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', '')), interpolate=False).items():
-              v = re.sub(r'\$([A-Z_]+)', lambda m: infra.get(m.group(1), m.group(0)), v)
-              print(f'export {k}={shlex.quote(v)}')
-          PYEOF
-          )"
 
           # Repo identity (for Kamal ERB in destination file)
           export REPO_NAME=${{ github.event.repository.name }}
@@ -370,6 +366,15 @@ jobs:
         run: |
           pip install -q python-dotenv
 
+          # Export app secrets
+          eval "$(python3 -c "
+          from dotenv import dotenv_values
+          from io import StringIO
+          import os, shlex
+          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', ''))).items():
+              print(f'export {k}={shlex.quote(v)}')
+          ")"
+
           # Infrastructure bindings
           export INFRA_WEB_IP=$(jq -r .web_ip /tmp/provision-output.json)
           for name in $(jq -r '.accessories | keys[]' /tmp/provision-output.json 2>/dev/null); do
@@ -378,18 +383,6 @@ jobs:
           for i in $(seq 0 $(($(jq '.worker_ips | length' /tmp/provision-output.json 2>/dev/null || echo 0) - 1))); do
             export "INFRA_WORKER_IP_${i}"=$(jq -r ".worker_ips[$i]" /tmp/provision-output.json)
           done
-
-          # Export app secrets (with $INFRA_* substitution)
-          eval "$(python3 << 'PYEOF'
-          from dotenv import dotenv_values
-          from io import StringIO
-          import os, re, shlex
-          infra = {k: v for k, v in os.environ.items() if k.startswith('INFRA_')}
-          for k, v in dotenv_values(stream=StringIO(os.environ.get('SECRET_ENV_VARS', '')), interpolate=False).items():
-              v = re.sub(r'\$([A-Z_]+)', lambda m: infra.get(m.group(1), m.group(0)), v)
-              print(f'export {k}={shlex.quote(v)}')
-          PYEOF
-          )"
 
           export REPO_NAME=${{ github.event.repository.name }}
           export REPO_FULL=${{ github.repository }}
