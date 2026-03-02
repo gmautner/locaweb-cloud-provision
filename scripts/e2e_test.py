@@ -453,7 +453,7 @@ def write_destination_file(env_name, workers=0, domain=None, accessories=None):
         for name in accessories:
             lines.append(f"  {name}:")
             if name == "db":
-                lines.append(f"    image: supabase/postgres:17.6.1.087")
+                lines.append(f"    image: supabase/postgres:17.6.1.091")
                 lines.append(f"    host: <%= ENV['INFRA_{name.upper()}_IP'] %>")
                 lines.append(f'    port: "5432:5432"')
                 lines.append(f'    cmd: "postgres -D /etc/postgresql'

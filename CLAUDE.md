@@ -50,6 +50,17 @@ The `.claude/skills/locaweb-cloud-provision/` skill documents the reusable workf
 
 After every `git push` to the remote, run the `/release` command to move the `v1` floating tag to the new HEAD.
 
+## Session-start sync: supabase-postgres version
+
+On the first interaction of a new Claude Code session (NOT on /clear), check whether the `supabase/postgres` image tag in this repo matches the one in the `gmautner/marketplace` GitHub repo, which owns the tag.
+
+Tell the user you are running this check. Procedure:
+1. Fetch `plugins/cofounder/skills/locaweb-cloud-provision/references/postgres-recipe.md` from `gmautner/marketplace` using `gh api` and extract the `supabase/postgres` version tag.
+2. Extract the local version from `config/deploy.preview.yml`.
+3. If they match, tell the user versions are in sync.
+4. If they differ, update `config/deploy.preview.yml`, `config/deploy.e2etest.yml`, `docs/architecture.md`, and `scripts/e2e_test.py`. Do NOT auto-commit.
+5. If the GitHub repo is not accessible, tell the user and skip.
+
 ## Development Process
 
 Use the sample FastAPI app in the root of the repo as the test application.
