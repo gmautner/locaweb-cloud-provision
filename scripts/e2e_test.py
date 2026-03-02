@@ -495,8 +495,8 @@ def git_commit_and_push(message):
         capture_output=True, text=True, cwd=SCRIPT_DIR).stdout.strip()
     for _ in range(12):
         time.sleep(5)
-        remote_sha = gh("api", f"repos/{REPO_FULL}/git/ref/heads/{branch}",
-                        "--jq", ".object.sha").strip()
+        _, remote_sha, _ = gh("api", f"repos/{REPO_FULL}/git/ref/heads/{branch}",
+                              "--jq", ".object.sha")
         if remote_sha == sha:
             break
     else:
