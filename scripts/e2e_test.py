@@ -416,6 +416,7 @@ def write_destination_file(env_name, workers=0, domain=None, accessories=None):
     ]
     if workers > 0:
         lines.append("  workers:")
+        lines.append("    cmd: gunicorn --bind 0.0.0.0:80 --workers 2 app:app")
         lines.append("    hosts:")
         for i in range(workers):
             lines.append(f"      - <%= ENV['INFRA_WORKER_IP_{i}'] %>")

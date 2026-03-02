@@ -16,10 +16,6 @@ env:
     - DATABASE_URL
     - MY_SECRET
 
-servers:
-  workers:
-    cmd: gunicorn --bind 0.0.0.0:80 --workers 2 app:app
-
 volumes:
   - /data/blobs:/data/blobs
 
