@@ -30,10 +30,15 @@ SSH_OPTS = [
 ]
 
 
-def ssh_run(ip, command, key_path):
-    """Run a remote command via SSH. Returns (rc, stdout, stderr)."""
+def ssh_run(ip, command, key_path, retries=3):
+    """Run a remote command via SSH. Retries on transient connection errors."""
     cmd = ["ssh"] + SSH_OPTS + ["-i", key_path, f"root@{ip}", command]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    for attempt in range(retries):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 or "Connection reset" not in result.stderr:
+            return result.returncode, result.stdout.strip(), result.stderr.strip()
+        if attempt < retries - 1:
+            time.sleep(5)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
