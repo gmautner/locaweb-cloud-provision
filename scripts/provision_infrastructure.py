@@ -309,33 +309,6 @@ def scale_vm(vm_id, name, new_offering_id, zone_id=None):
     print(f"  Scaled: {name} (offline — stopped, scaled, started)")
 
 
-def ensure_vm_running(vm_id, name, zone_id=None, timeout=120):
-    """Poll until a VM reaches Running state after disk attach.
-
-    CloudStack may briefly report a VM as Stopped during data disk
-    hot-attach even though the VM is still running at the hypervisor
-    level.  This helper waits for the API state to settle.  If the VM
-    is genuinely Stopped after a long wait, it attempts a start.
-    """
-    deadline = time.time() + timeout
-    started = False
-    while time.time() < deadline:
-        vm = find_vm(name, zone_id=zone_id)
-        if vm and vm.get("state") == "Running":
-            return
-        if vm and vm.get("state") == "Stopped" and not started:
-            elapsed = timeout - (deadline - time.time())
-            if elapsed > 30:
-                # VM has been Stopped for >30s — likely genuinely stopped
-                print(f"  VM {name} still Stopped after {elapsed:.0f}s, starting...")
-                result = cmk_quiet("start", "virtualmachine", f"id={vm_id}")
-                if result is None:
-                    print(f"  Start failed (VM may already be running), continuing to wait...")
-                started = True
-        time.sleep(5)
-    print(f"  Warning: VM {name} did not reach Running state within {timeout}s")
-
-
 def resize_volume(vol, desired_gb, desc):
     """Resize a volume if needed.  Rejects shrink requests.
 
@@ -810,17 +783,12 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
             print(f"  {desc} ({start}-{end}): created")
 
     # --- Data Disks ---
-    # Track VMs that may need restart after disk attachment (CloudStack may
-    # stop a VM during hot-attach).
-    vms_to_check = []
-
     if recover:
         print("\nRecovering data disks from snapshots...")
         web_vol_id = create_disk_from_snapshot(
             web_disk_name, recovery_snapshots["webdata"]["id"],
             web_vm_id, network_name, zone_id, "Web data disk")
         results["web_volume_id"] = web_vol_id
-        vms_to_check.append((web_vm_id, web_vm_name))
 
         for acc in accessories:
             acc_name = acc["name"]
@@ -830,14 +798,12 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
                 acc_results[acc_name]["vm_id"], network_name, zone_id,
                 f"{acc_name} data disk")
             acc_results[acc_name]["volume_id"] = acc_vol_id
-            vms_to_check.append((acc_results[acc_name]["vm_id"], acc_name))
     else:
         print("\nCreating data disks...")
         web_vol_id = create_disk(web_disk_name, disk_offering_id, zone_id,
                                   web_disk_size_gb, web_vm_id,
                                   network_name, "Web data disk")
         results["web_volume_id"] = web_vol_id
-        vms_to_check.append((web_vm_id, web_vm_name))
 
         for acc in accessories:
             acc_name = acc["name"]
@@ -847,12 +813,6 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
                                      acc_results[acc_name]["vm_id"],
                                      network_name, f"{acc_name} data disk")
             acc_results[acc_name]["volume_id"] = acc_vol_id
-            vms_to_check.append((acc_results[acc_name]["vm_id"], acc_name))
-
-    # Ensure all VMs with attached disks are Running
-    print("\nEnsuring VMs are Running after disk attach...")
-    for vm_id, vm_name in vms_to_check:
-        ensure_vm_running(vm_id, vm_name, zone_id=zone_id)
 
     # --- Snapshot Policies ---
     print("\nCreating snapshot policies...")
