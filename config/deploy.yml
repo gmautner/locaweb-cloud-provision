@@ -13,7 +13,7 @@ env:
     MY_VAR: hello-from-e2e
   secret:
     - POSTGRES_PASSWORD
-    - DATABASE_URL
+    - POSTGRES_HOST
     - MY_SECRET
 
 volumes:
