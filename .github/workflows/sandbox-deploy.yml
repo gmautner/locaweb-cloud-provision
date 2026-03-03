@@ -5,7 +5,7 @@
 #   - ghaction-github-runtime (replaces actions/github-script for GHA cache vars)
 #   - Drops Kamal gem caching (installs fresh every time)
 #
-# This workflow mirrors the deploy-app.yml structure but with a leaner deploy job.
+# Web-only deploy (no DB) to isolate the workflow changes from DB timing issues.
 # Tear down with: gh workflow run teardown.yml -f env_name=sandbox -f zone=ZP01
 
 name: "Sandbox: Simplified Deploy"
@@ -31,7 +31,7 @@ jobs:
       web_disk_size_gb: 20
       workers_replicas: 0
       workers_plan: small
-      accessories: '[{"name": "db", "plan": "micro", "disk_size_gb": 20, "ports": [5432]}]'
+      accessories: "[]"
       automatic_reboot: false
       recover: false
       automatic_reboot_time_utc: "05:00"
@@ -60,30 +60,22 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Remove key-file SSH config (using ssh-agent instead)
-        run: sed -i '/keys:/d' config/deploy.preview.yml
-
       - uses: crazy-max/ghaction-github-runtime@v3
 
       - name: Install Kamal
         run: sudo gem install kamal --no-document
 
-      - name: Set application secrets
-        run: |
-          echo "POSTGRES_PASSWORD=sandbox-test-pw" >> "$GITHUB_ENV"
-          echo "POSTGRES_HOST=$INFRA_DB_IP" >> "$GITHUB_ENV"
-          echo "MY_SECRET=sandbox-secret" >> "$GITHUB_ENV"
-
       - name: Deploy with Kamal
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          MY_SECRET: sandbox-secret
         run: |
           if [ "${{ needs.infra.outputs.infrastructure_changed }}" = "true" ]; then
             echo "Fresh infrastructure — running kamal setup"
-            kamal setup -d preview
+            kamal setup -d sandbox
           else
             echo "Infrastructure cached — running kamal deploy"
-            kamal deploy -d preview
+            kamal deploy -d sandbox
           fi
 
       - name: Verify deployment
@@ -92,8 +84,8 @@ jobs:
           sleep 30
           echo "## Sandbox Deploy Verification" >> "$GITHUB_STEP_SUMMARY"
           if curl -sf --max-time 10 "http://$INFRA_WEB_IP/up"; then
-            echo "✅ Health check passed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+            echo "Health check passed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ Health check failed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+            echo "Health check failed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
