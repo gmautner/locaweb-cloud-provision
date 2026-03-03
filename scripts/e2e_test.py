@@ -433,7 +433,6 @@ def write_destination_file(env_name, workers=0, domain=None, accessories=None):
         "",
         "ssh:",
         "  user: root",
-        "  keys: [.kamal/ssh_key]",
         "",
         "registry:",
         "  server: ghcr.io",
