@@ -83,9 +83,9 @@ jobs:
           echo "Waiting 30s for app to stabilize..."
           sleep 30
           echo "## Sandbox Deploy Verification" >> "$GITHUB_STEP_SUMMARY"
-          if curl -sf --max-time 10 "http://$INFRA_WEB_IP/up"; then
-            echo "Health check passed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+          if curl -sf --max-time 10 "http://$INFRA_WEB_IP.nip.io/up"; then
+            echo "Health check passed: http://$INFRA_WEB_IP.nip.io/up" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Health check failed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+            echo "Health check failed: http://$INFRA_WEB_IP.nip.io/up" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
