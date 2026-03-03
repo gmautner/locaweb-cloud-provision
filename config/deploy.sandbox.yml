@@ -19,6 +19,13 @@ registry:
   password:
     - KAMAL_REGISTRY_PASSWORD
 
+env:
+  clear:
+    BLOB_STORAGE_PATH: /data/blobs
+    MY_VAR: hello-from-e2e
+  secret:
+    - MY_SECRET
+
 builder:
   arch: amd64
   cache:
