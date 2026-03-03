@@ -184,6 +184,15 @@ def find_vm(name, zone_id=None, network_id=None):
     return None
 
 
+def list_vms_in_network(network_id):
+    """List all VMs in a network, return list of dicts."""
+    data = cmk_quiet("list", "virtualmachines", f"networkid={network_id}",
+                     "filter=id,name,state")
+    if data:
+        return data.get("virtualmachine", [])
+    return []
+
+
 def find_volume(name, zone_id=None):
     """Find existing volume by name, return dict or None."""
     cmd = ["list", "volumes", f"name={name}", "type=DATADISK",
@@ -517,8 +526,28 @@ def find_public_ip_for_vm(network_id, vm_id):
     return None
 
 
-def remove_vm_and_ip(vm_name, vm_id, net_id):
-    """Remove a VM and its associated public IP, firewall rules, and NAT."""
+def remove_vm_and_ip(vm_name, vm_id, net_id, network_name=None):
+    """Remove a VM and its associated public IP, firewall rules, and NAT.
+
+    If network_name is provided, also cleans up data volumes (snapshot
+    policies, detach, delete) attached to the VM.
+    """
+    # Clean up data volumes if network_name given (accessories have data disks)
+    if network_name:
+        vol_data = cmk_quiet("list", "volumes", f"virtualmachineid={vm_id}",
+                             "type=DATADISK", "filter=id,name")
+        for vol in (vol_data or {}).get("volume", []):
+            policies = cmk_quiet("list", "snapshotpolicies",
+                                 f"volumeid={vol['id']}")
+            for p in (policies or {}).get("snapshotpolicy", []):
+                cmk("delete", "snapshotpolicies", f"id={p['id']}")
+                print(f"    Deleted snapshot policy for {vol['name']}")
+            cmk("detach", "volume", f"id={vol['id']}")
+            print(f"    Detached {vol['name']}")
+            time.sleep(2)
+            cmk("delete", "volume", f"id={vol['id']}")
+            print(f"    Deleted {vol['name']}")
+
     ip = find_public_ip_for_vm(net_id, vm_id)
     if ip and not ip.get("issourcenat", False):
         if ip.get("isstaticnat", False):
@@ -685,6 +714,25 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
         print("  No excess workers found.")
     else:
         print(f"  Removed {removed} excess worker(s).")
+
+    # --- Clean up stale VMs ---
+    # Any VM in the network that is not web, a current worker, or a current
+    # accessory is stale (e.g. a renamed/removed accessory) and must go.
+    expected_names = {"web"}
+    for i in range(1, workers_replicas + 1):
+        expected_names.add(f"worker-{i}")
+    for acc in accessories:
+        expected_names.add(acc["name"])
+    all_vms = list_vms_in_network(net_id)
+    stale_vms = [vm for vm in all_vms if vm["name"] not in expected_names]
+    if stale_vms:
+        print(f"\nRemoving {len(stale_vms)} stale VM(s)...")
+        for vm in stale_vms:
+            print(f"  Removing: {vm['name']}")
+            remove_vm_and_ip(vm["name"], vm["id"], net_id,
+                             network_name=network_name)
+    else:
+        print("\nNo stale VMs found.")
 
     # --- Public IPs & Static NAT ---
     print("\nAssigning public IPs...")
