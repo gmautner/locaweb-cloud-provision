@@ -24,6 +24,16 @@ for acc in accessories:
               "lowercase letters, digits, and underscores (no hyphens).",
               file=sys.stderr)
         sys.exit(1)
+    if "disk_size_gb" not in acc:
+        print(f"ERROR: Accessory '{name}' is missing required field 'disk_size_gb'.",
+              file=sys.stderr)
+        sys.exit(1)
+    disk = acc["disk_size_gb"]
+    if not isinstance(disk, (int, float)) or int(disk) != disk or not (10 <= disk <= 4000):
+        print(f"ERROR: Accessory '{name}' has invalid disk_size_gb={disk}. "
+              "Must be an integer between 10 and 4000.",
+              file=sys.stderr)
+        sys.exit(1)
 
 config = {
     "zone": os.environ.get("INPUT_ZONE") or "ZP01",
