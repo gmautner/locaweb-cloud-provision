@@ -202,7 +202,7 @@ def find_public_ips(network_id):
     """Find non-source-NAT public IPs associated with a network."""
     data = cmk_quiet("list", "publicipaddresses",
                      f"associatednetworkid={network_id}",
-                     "filter=id,ipaddress,issourcenat")
+                     "filter=id,ipaddress,issourcenat,isstaticnat,virtualmachineid")
     ips = []
     if data:
         for ip in data.get("publicipaddress", []):
@@ -705,10 +705,14 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
             ip_map[vm_id] = existing_ip
             print(f"  {label}: reusing {existing_ip['ipaddress']}")
 
-    # Find unassigned existing non-source-NAT IPs
+    # Find truly unassigned existing non-source-NAT IPs.
+    # An IP is unassigned only if it's not mapped to any of our current VMs
+    # AND does not have static NAT enabled to a stale/unknown VM.
     all_existing = find_public_ips(net_id)
     assigned_ip_ids = {ip["id"] for ip in ip_map.values()}
-    unassigned = [ip for ip in all_existing if ip["id"] not in assigned_ip_ids]
+    unassigned = [ip for ip in all_existing
+                  if ip["id"] not in assigned_ip_ids
+                  and not ip.get("isstaticnat", False)]
 
     # Acquire additional IPs if needed
     vms_needing_ips = [(l, vid) for l, vid in vm_assignments
