@@ -31,7 +31,7 @@ jobs:
       web_disk_size_gb: 20
       workers_replicas: 0
       workers_plan: small
-      accessories: '[{"name": "db", "plan": "micro", "disk_size_gb": 20}]'
+      accessories: '[{"name": "db", "plan": "micro", "disk_size_gb": 20, "ports": [5432]}]'
       automatic_reboot: false
       recover: false
       automatic_reboot_time_utc: "05:00"
