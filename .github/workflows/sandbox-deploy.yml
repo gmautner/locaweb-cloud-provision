@@ -1,0 +1,99 @@
+# Sandbox: Test simplified deploy job
+#
+# Tests replacing verbose inline scripts with community actions:
+#   - webfactory/ssh-agent   (replaces manual SSH key file setup)
+#   - ghaction-github-runtime (replaces actions/github-script for GHA cache vars)
+#   - Drops Kamal gem caching (installs fresh every time)
+#
+# This workflow mirrors the deploy-app.yml structure but with a leaner deploy job.
+# Tear down with: gh workflow run teardown.yml -f env_name=sandbox -f zone=ZP01
+
+name: "Sandbox: Simplified Deploy"
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: sandbox
+  cancel-in-progress: true
+
+jobs:
+  infra:
+    uses: ./.github/workflows/provision.yml
+    with:
+      env_name: sandbox
+      zone: ZP01
+      web_plan: micro
+      web_disk_size_gb: 20
+      workers_replicas: 0
+      workers_plan: small
+      accessories: '[{"name": "db", "plan": "micro", "disk_size_gb": 20}]'
+      automatic_reboot: false
+      recover: false
+      automatic_reboot_time_utc: "05:00"
+    secrets:
+      CLOUDSTACK_API_KEY: ${{ secrets.CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.CLOUDSTACK_SECRET_KEY }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  deploy:
+    needs: infra
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load infrastructure environment
+        run: echo "${{ needs.infra.outputs.infra_env }}" >> "$GITHUB_ENV"
+
+      - name: Set repo identity
+        run: |
+          echo "REPO_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+          echo "REPO_FULL=${{ github.repository }}" >> "$GITHUB_ENV"
+          echo "REPO_OWNER=${{ github.repository_owner }}" >> "$GITHUB_ENV"
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Remove key-file SSH config (using ssh-agent instead)
+        run: sed -i '/keys:/d' config/deploy.preview.yml
+
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Install Kamal
+        run: gem install kamal --no-document
+
+      - name: Set application secrets
+        run: |
+          echo "POSTGRES_PASSWORD=sandbox-test-pw" >> "$GITHUB_ENV"
+          echo "POSTGRES_HOST=$INFRA_DB_IP" >> "$GITHUB_ENV"
+          echo "MY_SECRET=sandbox-secret" >> "$GITHUB_ENV"
+
+      - name: Deploy with Kamal
+        env:
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ needs.infra.outputs.infrastructure_changed }}" = "true" ]; then
+            echo "Fresh infrastructure — running kamal setup"
+            kamal setup -d preview
+          else
+            echo "Infrastructure cached — running kamal deploy"
+            kamal deploy -d preview
+          fi
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting 30s for app to stabilize..."
+          sleep 30
+          echo "## Sandbox Deploy Verification" >> "$GITHUB_STEP_SUMMARY"
+          if curl -sf --max-time 10 "http://$INFRA_WEB_IP/up"; then
+            echo "✅ Health check passed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Health check failed: http://$INFRA_WEB_IP/up" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
