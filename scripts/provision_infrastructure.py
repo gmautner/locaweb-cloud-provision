@@ -765,12 +765,9 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
     for acc in accessories:
         acc_name = acc["name"]
         acc_ports = {22}
-        ports_val = acc.get("ports", [])
-        if isinstance(ports_val, list):
-            for p in ports_val:
-                acc_ports.add(int(p))
-        elif ports_val:
-            for p in str(ports_val).split(","):
+        raw_ports = str(acc.get("ports", ""))
+        if raw_ports:
+            for p in raw_ports.split(","):
                 p = p.strip()
                 if p.isdigit():
                     acc_ports.add(int(p))
