@@ -249,7 +249,7 @@ All inputs to `provision.yml`, their types, defaults, and when to use them:
 | `web_disk_size_gb` | number | `20` | Increase if the app stores files (uploads, media). Consider environment: preview can use smaller, production may need more. Can only grow, never shrink. |
 | `workers_replicas` | number | `0` | Number of worker VMs. Set to 0 for no workers. |
 | `workers_plan` | string | `"small"` | VM size for workers. Choose based on worker workload intensity. See [scaling.md](scaling.md). |
-| `accessories` | string | `"[]"` | JSON array of accessory VMs: `[{"name": "db", "plan": "medium", "disk_size_gb": 20}]`. |
+| `accessories` | string | `"[]"` | JSON array of accessory VMs: `[{"name": "db", "plan": "medium", "disk_size_gb": 20}]`. Each object supports an optional `ports` field (comma-separated string, e.g. `"5432"` or `"80,443"`) to open additional firewall ports; port 22 (SSH) is always included. |
 | `automatic_reboot` | boolean | `true` | Enable automatic reboot after unattended security upgrades. Usually leave as default. |
 | `automatic_reboot_time_utc` | string | `"05:00"` | When automatic reboots happen. Usually leave as default. |
 | `recover` | boolean | `false` | Reserved for future disaster recovery workflows. Do not use. |

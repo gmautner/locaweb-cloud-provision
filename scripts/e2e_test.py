@@ -467,6 +467,12 @@ def write_destination_file(env_name, workers=0, domain=None, accessories=None):
                 lines.append(f"        - POSTGRES_PASSWORD")
                 lines.append(f"    directories:")
                 lines.append(f"      - /data/pgdata:/var/lib/postgresql/data")
+            elif name == "nginx":
+                lines.append(f"    image: nginx:alpine")
+                lines.append(f"    host: <%= ENV['INFRA_{name.upper()}_IP'] %>")
+                lines.append(f"    proxy:")
+                lines.append(f"      host: <%= ENV['INFRA_{name.upper()}_IP'] %>.nip.io")
+                lines.append(f"      ssl: false")
             else:
                 lines.append(f"    host: <%= ENV['INFRA_{name.upper()}_IP'] %>")
     lines.append("")
@@ -967,16 +973,19 @@ class E2ETestRunner:
     def _scenario_complete(self):
         s = TestScenario("Complete Deploy (web + workers + db)")
         with s:
-            # Prepare destination file (1 worker + db)
+            # Prepare destination file (1 worker + db + nginx)
             self.prepare_deploy(DEFAULT_ENV_NAME, workers=1,
-                                accessories=["db"])
+                                accessories=["db", "nginx"])
 
-            # Deploy
+            # Deploy (nginx without ports — port 80 should be blocked)
             output = trigger_deploy({
                 "zone": ZONE,
                 "env_name": DEFAULT_ENV_NAME,
                 "workers_replicas": "1",
-                "accessories": '[{"name":"db","plan":"medium","disk_size_gb":20}]',
+                "accessories": json.dumps([
+                    {"name": "db", "plan": "medium", "disk_size_gb": 20},
+                    {"name": "nginx", "plan": "micro", "disk_size_gb": 20},
+                ]),
                 "automatic_reboot": "true",
                 "automatic_reboot_time_utc": "03:30",
             }, ref=self.branch)
@@ -984,14 +993,23 @@ class E2ETestRunner:
             web_ip = output.get("web_ip", "")
             worker_ips = output.get("worker_ips", [])
             db_ip = output.get("accessories", {}).get("db", {}).get("ip", "")
+            nginx_ip = output.get("accessories", {}).get("nginx", {}).get("ip", "")
 
             s.assert_true(web_ip, "Deploy produced web_ip")
             s.assert_true(len(worker_ips) >= 1, "Deploy produced worker_ips")
             s.assert_true(db_ip, "Deploy produced db accessory ip")
+            s.assert_true(nginx_ip, "Deploy produced nginx accessory ip")
 
             if not web_ip:
                 self.scenarios.append(s)
                 return
+
+            # Accessory ports: negative test — nginx port 80 blocked
+            if nginx_ip:
+                nginx_http = HTTPVerifier(nginx_ip)
+                status, _ = nginx_http.get("/", timeout=5)
+                s.assert_equal(status, 0,
+                               "Nginx port 80 unreachable (no ports in config)")
 
             # HTTP: Health check
             http = HTTPVerifier(web_ip)
@@ -1080,7 +1098,8 @@ class E2ETestRunner:
             # Unattended upgrades: all VMs should have auto-upgrades + reboot at 03:30
             all_ips = ([("web", web_ip)]
                        + [(f"worker-{i}", w) for i, w in enumerate(worker_ips, 1)]
-                       + [("db", db_ip)])
+                       + [("db", db_ip)]
+                       + ([("nginx", nginx_ip)] if nginx_ip else []))
             for label, ip in all_ips:
                 if ip:
                     s.assert_true(
@@ -1113,6 +1132,31 @@ class E2ETestRunner:
             if db_vol_id:
                 s.assert_snapshot_policy(db_vol_id, network_name,
                                         "db volume")
+
+            # Accessory ports: positive test — redeploy nginx with ports: "80"
+            if nginx_ip:
+                self.prepare_deploy(DEFAULT_ENV_NAME, workers=1,
+                                    accessories=["db", "nginx"])
+                output2 = trigger_deploy({
+                    "zone": ZONE,
+                    "env_name": DEFAULT_ENV_NAME,
+                    "workers_replicas": "1",
+                    "accessories": json.dumps([
+                        {"name": "db", "plan": "medium", "disk_size_gb": 20},
+                        {"name": "nginx", "plan": "micro", "disk_size_gb": 20,
+                         "ports": "80"},
+                    ]),
+                    "automatic_reboot": "true",
+                    "automatic_reboot_time_utc": "03:30",
+                }, ref=self.branch)
+
+                nginx_ip2 = (output2.get("accessories", {})
+                             .get("nginx", {}).get("ip", ""))
+                if nginx_ip2:
+                    nginx_http2 = HTTPVerifier(nginx_ip2)
+                    s.assert_true(
+                        nginx_http2.wait_for_healthy("/", timeout=120),
+                        "Nginx port 80 reachable (ports: '80' in config)")
 
             # Teardown
             trigger_teardown(DEFAULT_ENV_NAME)

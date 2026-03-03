@@ -65,7 +65,7 @@ on:
           - 2xlarge
           - 4xlarge
       accessories:
-        description: "Accessory VMs (JSON array: [{name, plan, disk_size_gb}])"
+        description: "Accessory VMs (JSON array: [{name, plan, disk_size_gb, ports?}])"
         required: false
         default: "[]"
       automatic_reboot:

@@ -764,8 +764,17 @@ def provision(config, repo_name, unique_id, env_name, public_key, recover=False)
             fw_rules.append((wip["id"], 22, 22, f"SSH (worker-{i})"))
     for acc in accessories:
         acc_name = acc["name"]
-        fw_rules.append((acc_results[acc_name]["ip_id"], 22, 22,
-                         f"SSH ({acc_name})"))
+        acc_ports = {22}
+        raw_ports = str(acc.get("ports", ""))
+        if raw_ports:
+            for p in raw_ports.split(","):
+                p = p.strip()
+                if p.isdigit():
+                    acc_ports.add(int(p))
+        for port in sorted(acc_ports):
+            label = f"SSH ({acc_name})" if port == 22 else f"TCP/{port} ({acc_name})"
+            fw_rules.append((acc_results[acc_name]["ip_id"], port, port,
+                             label))
 
     for ip_id, start, end, desc in fw_rules:
         existing = find_firewall_rules(ip_id)
