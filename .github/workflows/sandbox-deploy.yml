@@ -75,14 +75,7 @@ jobs:
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           MY_SECRET: sandbox-secret
-        run: |
-          if [ "${{ needs.infra.outputs.infrastructure_changed }}" = "true" ]; then
-            echo "Fresh infrastructure — running kamal setup"
-            kamal setup -d sandbox
-          else
-            echo "Infrastructure cached — running kamal deploy"
-            kamal deploy -d sandbox
-          fi
+        run: kamal setup -d sandbox
 
       - name: Verify deployment
         run: |
