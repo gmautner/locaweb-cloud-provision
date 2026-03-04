@@ -155,28 +155,8 @@ jobs:
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ needs.infra.outputs.infrastructure_changed }}" = "true" ]; then
-            echo "Fresh infrastructure — running kamal setup"
-            kamal setup -d ${{ inputs.env_name || 'preview' }}
-          else
-            echo "Infrastructure cached — running kamal deploy"
-            kamal deploy -d ${{ inputs.env_name || 'preview' }}
-          fi
-
-      - name: Reboot scaled accessories
-        env:
-          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 << 'PYEOF'
-          import json, subprocess, sys
-          scaled = json.loads('${{ needs.infra.outputs.scaled_accessories }}')
-          for name in scaled:
-              print(f"Accessory '{name}' VM was rescaled, rebooting...")
-              subprocess.run(
-                  ["kamal", "accessory", "reboot", name, "-d", "${{ inputs.env_name || 'preview' }}"],
-                  check=True
-              )
-          PYEOF
+          kamal setup -d ${{ inputs.env_name || 'preview' }}
+          kamal accessory reboot all -d ${{ inputs.env_name || 'preview' }}
 
       - name: Print Kamal deployment summary
         run: |
