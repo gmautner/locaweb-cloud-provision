@@ -24,7 +24,7 @@ MOUNT_POINT="/data"
 
 # Wait for the attached data disk to appear
 echo "Waiting for $DEVICE..."
-TIMEOUT=300
+TIMEOUT=600
 INTERVAL=5
 ELAPSED=0
 while [ ! -b "$DEVICE" ]; do
