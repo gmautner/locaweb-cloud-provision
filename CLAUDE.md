@@ -42,10 +42,6 @@ When changing skills, always use the skill-creator skill to package the skill be
 
 The `.claude/skills/skill-creator/` skill was vendored from https://github.com/anthropics/skills/tree/main/skills/skill-creator. Check the source repo for updates before using it for new skill work.
 
-### locaweb-cloud-provision
-
-The `.claude/skills/locaweb-cloud-provision/` skill documents the reusable workflow contract for external repositories deploying to Locaweb Cloud. Keep it in sync when changing workflow inputs, secrets, outputs, or platform behavior.
-
 ## Release
 
 After every `git push` to the remote, run the `/release` command to move the `v1` floating tag to the new HEAD.
