@@ -10,7 +10,7 @@ sed -i 's|br\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list.d
 
 # --- fail2ban: block SSH brute-force attempts ---
 apt-get update -qq
-apt-get install -y -qq fail2ban
+apt-get install -y -qq fail2ban jq
 cat > /etc/fail2ban/jail.local << 'F2BEOF'
 [DEFAULT]
 bantime = 3600
@@ -22,3 +22,19 @@ enabled = true
 mode = aggressive
 F2BEOF
 systemctl restart fail2ban
+
+# --- Route .internal DNS queries to the CloudStack virtual router ---
+# The gateway of the isolated network is always the virtual router,
+# which is the only DNS server that resolves internal VM hostnames.
+# Without this, systemd-resolved may failover to a public DNS server
+# that returns NXDOMAIN for internal names, breaking inter-VM connectivity.
+GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
+
+mkdir -p /etc/systemd/resolved.conf.d
+cat > /etc/systemd/resolved.conf.d/internal-dns.conf << EOF
+[Resolve]
+DNS=${GATEWAY}
+Domains=~internal
+EOF
+
+systemctl restart systemd-resolved
