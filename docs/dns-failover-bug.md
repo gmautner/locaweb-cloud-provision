@@ -71,39 +71,38 @@ systemctl restart systemd-resolved
 
 This is not a permanent fix — the next transient timeout will trigger the same failover.
 
-## Proposed solution
+## Solution
 
 ### Principle
 
-Route all `.internal` DNS queries to a dedicated global scope that only has the CloudStack virtual router as its DNS server. Leave the DHCP-provided configuration on eth0 untouched for all other queries.
+Force **all** DNS queries through the CloudStack virtual router by overriding the DHCP-provided DNS configuration at the `systemd-networkd` level. The virtual router resolves `.internal` hostnames directly and forwards external queries upstream. No public DNS server is ever consulted.
 
 ### How it works
 
-`systemd-resolved` supports a **global** DNS scope configured via `/etc/systemd/resolved.conf.d/`. When a routing domain (prefixed with `~`) is set in the global scope, matching queries go to the global scope's DNS servers — bypassing eth0 entirely.
+A `systemd-networkd` drop-in overrides two settings on the primary network interface:
+
+1. **`[DHCPv4] UseDNS=false`** — Prevents DHCP from injecting public DNS servers (`186.202.26.26`, `186.202.27.27`) into the link configuration.
+2. **`[Network] DNS=<GATEWAY>`** — Sets the virtual router as the sole DNS server for the link.
 
 After the change, `resolvectl status` shows:
 
 ```
-Global
+Link 2 (eth0)
     DNS Servers: 10.1.1.1
-     DNS Domain: ~internal
-
-Link 2 (eth0)                          ← unchanged, DHCP-provided
-    DNS Servers: 10.1.1.1 186.202.26.26 186.202.27.27
      DNS Domain: preview.zp01.internal
 ```
 
 Query routing:
 
-| Query | Scope | Server | Result |
-|-------|-------|--------|--------|
-| `db.preview.zp01.internal` | Global (`~internal` matches) | `10.1.1.1` | Resolves correctly |
-| `google.com` | eth0 (DefaultRoute, no routing match) | Current on eth0 | Resolves correctly |
-| `10.1.1.1` timeout for `.internal` | Global (retries, no fallback to public) | `10.1.1.1` | Retries — never falls back to public |
+| Query | Server | Result |
+|-------|--------|--------|
+| `db.preview.zp01.internal` | `10.1.1.1` (virtual router) | Resolves correctly |
+| `google.com` | `10.1.1.1` (virtual router forwards upstream) | Resolves correctly |
+| `10.1.1.1` timeout | Retries `10.1.1.1` (no alternative to fail over to) | Retries — never falls back to public |
 
 ### Implementation
 
-Changes in `scripts/userdata/web_vm.sh` and `scripts/userdata/worker_vm.sh`:
+Changes in `scripts/userdata/web_vm.sh`, `scripts/userdata/worker_vm.sh`, and `scripts/userdata/accessory_vm.sh`:
 
 **1. Install `jq` (for structured JSON parsing of network data):**
 
@@ -111,34 +110,36 @@ Changes in `scripts/userdata/web_vm.sh` and `scripts/userdata/worker_vm.sh`:
 apt-get install -y -qq fail2ban jq
 ```
 
-**2. Configure DNS routing (at the end of the script, after network is up):**
+**2. Configure DNS override (at the end of the script, after network is up):**
 
 ```bash
-# --- Route .internal DNS queries to the CloudStack virtual router ---
-# The gateway of the isolated network is always the virtual router,
-# which is the only DNS server that resolves internal VM hostnames.
-# Without this, systemd-resolved may failover to a public DNS server
-# that returns NXDOMAIN for internal names, breaking inter-VM connectivity.
+# --- Force all DNS queries through the CloudStack virtual router ---
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
+IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
 
-mkdir -p /etc/systemd/resolved.conf.d
-cat > /etc/systemd/resolved.conf.d/internal-dns.conf << EOF
-[Resolve]
+NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+if [ -n "$NETFILE" ]; then
+  DROPIN_DIR="${NETFILE}.d"
+  mkdir -p "$DROPIN_DIR"
+  cat > "$DROPIN_DIR/dns-override.conf" << EOF
+[DHCPv4]
+UseDNS=false
+
+[Network]
 DNS=${GATEWAY}
-Domains=~internal
 EOF
-
-systemctl restart systemd-resolved
+  networkctl reload && networkctl reconfigure "$IFACE"
+fi
 ```
 
 ### Why this works
 
-- `.internal` queries go to the global scope, which has **only** the virtual router. No public DNS server can intercept them.
-- If the virtual router times out, `systemd-resolved` retries it (no alternative server in the global scope to fail over to). This is correct — a public server can never resolve internal names.
-- The DHCP configuration on eth0 is untouched. Public DNS behavior, failover between public servers, and DHCP renewals all work as before.
-- The gateway IP is extracted from `ip -json` (structured output), not from string parsing.
-- `~internal` matches all CloudStack network domains (`*.preview.zp01.internal`, `*.production.zp01.internal`, etc.) regardless of zone or environment.
-- The drop-in in `/etc/systemd/resolved.conf.d/` survives reboots and DHCP renewals.
+- Public DNS servers are never configured on the link, so `systemd-resolved` cannot fail over to them. The root cause is eliminated rather than worked around.
+- The virtual router handles both internal and external DNS. Internal names resolve directly; external names are forwarded upstream by the router.
+- If the virtual router times out, `systemd-resolved` retries it (no alternative server to fail over to). This is correct — a public server can never resolve internal names.
+- The gateway IP and interface name are extracted from `ip -json` (structured output), not from string parsing.
+- The networkd drop-in survives reboots and DHCP renewals.
+- `networkctl reload && networkctl reconfigure` applies the override immediately without a full service restart.
 
 ### Rollout
 
@@ -148,11 +149,25 @@ To apply to an existing VM without reprovisioning:
 
 ```bash
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
-mkdir -p /etc/systemd/resolved.conf.d
-cat > /etc/systemd/resolved.conf.d/internal-dns.conf << EOF
-[Resolve]
+IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
+NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+if [ -n "$NETFILE" ]; then
+  DROPIN_DIR="${NETFILE}.d"
+  mkdir -p "$DROPIN_DIR"
+  cat > "$DROPIN_DIR/dns-override.conf" << EOF
+[DHCPv4]
+UseDNS=false
+
+[Network]
 DNS=${GATEWAY}
-Domains=~internal
 EOF
+  networkctl reload && networkctl reconfigure "$IFACE"
+fi
+```
+
+Also remove the old resolved drop-in if present:
+
+```bash
+rm -f /etc/systemd/resolved.conf.d/internal-dns.conf
 systemctl restart systemd-resolved
 ```

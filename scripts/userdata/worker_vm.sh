@@ -23,18 +23,25 @@ mode = aggressive
 F2BEOF
 systemctl restart fail2ban
 
-# --- Route .internal DNS queries to the CloudStack virtual router ---
-# The gateway of the isolated network is always the virtual router,
-# which is the only DNS server that resolves internal VM hostnames.
-# Without this, systemd-resolved may failover to a public DNS server
-# that returns NXDOMAIN for internal names, breaking inter-VM connectivity.
+# --- Force all DNS queries through the CloudStack virtual router ---
+# Disable DHCP-provided DNS (which includes public servers) and set the
+# gateway as the sole resolver. The virtual router resolves .internal
+# hostnames directly and forwards external queries upstream, eliminating
+# the risk of systemd-resolved failing over to a public DNS server
+# that returns NXDOMAIN for .internal names.
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
+IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
 
-mkdir -p /etc/systemd/resolved.conf.d
-cat > /etc/systemd/resolved.conf.d/internal-dns.conf << EOF
-[Resolve]
+NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+if [ -n "$NETFILE" ]; then
+  DROPIN_DIR="${NETFILE}.d"
+  mkdir -p "$DROPIN_DIR"
+  cat > "$DROPIN_DIR/dns-override.conf" << EOF
+[DHCPv4]
+UseDNS=false
+
+[Network]
 DNS=${GATEWAY}
-Domains=~internal
 EOF
-
-systemctl restart systemd-resolved
+  networkctl reload && networkctl reconfigure "$IFACE"
+fi
