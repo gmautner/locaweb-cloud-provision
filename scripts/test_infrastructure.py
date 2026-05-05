@@ -115,6 +115,34 @@ class SSHVerifier:
             time.sleep(10)
         return False
 
+    def verify_dns_only_gateway(self, ip):
+        """Verify the active iface has ONLY the default gateway as DNS server.
+
+        Catches regressions where DHCP-supplied public DNS leaks back into
+        the link config (the failure mode addressed by the userdata DNS
+        drop-in). Returns a dict: {ok, gateway, iface, dns_servers}.
+        """
+        result = {"ok": False, "gateway": None, "iface": None,
+                  "dns_servers": []}
+        rc, stdout, _ = self.run_command(
+            ip, "ip -4 -json route show default")
+        if rc != 0 or not stdout:
+            return result
+        try:
+            route = json.loads(stdout)[0]
+            result["gateway"] = route["gateway"]
+            result["iface"] = route["dev"]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            return result
+        rc, stdout, _ = self.run_command(
+            ip, f"resolvectl dns {result['iface']}")
+        if rc != 0 or ":" not in stdout:
+            return result
+        # Format: "Link N (iface): <ip1> <ip2> ..."
+        result["dns_servers"] = stdout.split(":", 1)[1].split()
+        result["ok"] = (result["dns_servers"] == [result["gateway"]])
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Infrastructure Verifier
@@ -608,6 +636,11 @@ class TestRunner:
             s.assert_true(
                 self.ssh.verify_mount_point(web_ip, "/data/", timeout=120),
                 "SSH to web VM: /data/ mounted")
+            dns = self.ssh.verify_dns_only_gateway(web_ip)
+            s.assert_true(
+                dns["ok"],
+                f"DNS on web ({dns['iface']}) = only gateway "
+                f"{dns['gateway']}; got {dns['dns_servers']}")
 
             db_ip = output["accessories"]["db"]["ip"]
             s.assert_true(
@@ -616,11 +649,21 @@ class TestRunner:
             s.assert_true(
                 self.ssh.verify_mount_point(db_ip, "/data/", timeout=120),
                 "SSH to DB VM: /data/ mounted")
+            dns = self.ssh.verify_dns_only_gateway(db_ip)
+            s.assert_true(
+                dns["ok"],
+                f"DNS on db ({dns['iface']}) = only gateway "
+                f"{dns['gateway']}; got {dns['dns_servers']}")
 
             for i, wip_addr in enumerate(output.get("worker_ips", []), 1):
                 s.assert_true(
                     self.ssh.wait_for_ssh(wip_addr, timeout=180),
                     f"SSH to Worker-{i} VM: reachable")
+                dns = self.ssh.verify_dns_only_gateway(wip_addr)
+                s.assert_true(
+                    dns["ok"],
+                    f"DNS on worker-{i} ({dns['iface']}) = only gateway "
+                    f"{dns['gateway']}; got {dns['dns_servers']}")
 
             # --- Output JSON fields ---
             s.assert_true("web_vm_id" in output, "Output has web_vm_id")
@@ -757,6 +800,11 @@ class TestRunner:
             s.assert_true(
                 self.ssh.verify_mount_point(web_ip, "/data/", timeout=120),
                 "SSH to web: /data/ mounted")
+            dns = self.ssh.verify_dns_only_gateway(web_ip)
+            s.assert_true(
+                dns["ok"],
+                f"DNS on web ({dns['iface']}) = only gateway "
+                f"{dns['gateway']}; got {dns['dns_servers']}")
 
             # Output JSON
             s.assert_true("worker_vm_ids" not in output,

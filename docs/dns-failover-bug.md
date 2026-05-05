@@ -117,9 +117,14 @@ apt-get install -y -qq fail2ban jq
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
 IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
 
-NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+# Resolve the .network file actually bound to $IFACE via networkctl JSON.
+# On Ubuntu+netplan+cloud-init the file lives in /run/systemd/network/, not
+# /etc/, so a hardcoded /etc/systemd/network/ glob would silently miss it.
+# Drop-ins under /etc/ are merged across the search path and persist across
+# reboots even when the source unit is regenerated under /run/.
+NETFILE=$(networkctl status "$IFACE" --json=short | jq -r '.NetworkFile // empty')
 if [ -n "$NETFILE" ]; then
-  DROPIN_DIR="${NETFILE}.d"
+  DROPIN_DIR="/etc/systemd/network/$(basename "$NETFILE").d"
   mkdir -p "$DROPIN_DIR"
   cat > "$DROPIN_DIR/dns-override.conf" << EOF
 [DHCPv4]
@@ -138,8 +143,13 @@ fi
 - The virtual router handles both internal and external DNS. Internal names resolve directly; external names are forwarded upstream by the router.
 - If the virtual router times out, `systemd-resolved` retries it (no alternative server to fail over to). This is correct — a public server can never resolve internal names.
 - The gateway IP and interface name are extracted from `ip -json` (structured output), not from string parsing.
-- The networkd drop-in survives reboots and DHCP renewals.
+- The active `.network` unit is located via `networkctl --json` rather than by globbing `/etc/systemd/network/`. This is critical: on Ubuntu with cloud-init + netplan, the unit is generated under `/run/systemd/network/` at every boot, so a glob limited to `/etc/` would silently find nothing and skip the override.
+- The drop-in lives under `/etc/systemd/network/<name>.network.d/`. systemd-networkd merges drop-ins across its full search path, so this applies to a source unit anywhere (including `/run/`) and persists across reboots, even though `/run/` is regenerated each boot.
 - `networkctl reload && networkctl reconfigure` applies the override immediately without a full service restart.
+
+### Regression test
+
+`SSHVerifier.verify_dns_only_gateway` (in both `scripts/e2e_test.py` and `scripts/test_infrastructure.py`) asserts that the active link has only the default gateway as a DNS server. It runs `resolvectl dns <iface>` on every provisioned VM and fails the test if any DHCP-supplied public DNS leaked through.
 
 ### Rollout
 
@@ -150,9 +160,9 @@ To apply to an existing VM without reprovisioning:
 ```bash
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
 IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
-NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+NETFILE=$(networkctl status "$IFACE" --json=short | jq -r '.NetworkFile // empty')
 if [ -n "$NETFILE" ]; then
-  DROPIN_DIR="${NETFILE}.d"
+  DROPIN_DIR="/etc/systemd/network/$(basename "$NETFILE").d"
   mkdir -p "$DROPIN_DIR"
   cat > "$DROPIN_DIR/dns-override.conf" << EOF
 [DHCPv4]

@@ -65,9 +65,14 @@ fi
 GATEWAY=$(ip -4 -json route show default | jq -r '.[0].gateway')
 IFACE=$(ip -4 -json route show default | jq -r '.[0].dev')
 
-NETFILE=$(ls /etc/systemd/network/*.network 2>/dev/null | head -1)
+# Resolve the .network file actually bound to $IFACE via networkctl JSON.
+# On Ubuntu+netplan+cloud-init the file lives in /run/systemd/network/, not
+# /etc/, so a hardcoded /etc/systemd/network/ glob would silently miss it.
+# Drop-ins under /etc/ are merged across the search path and persist across
+# reboots even when the source unit is regenerated under /run/.
+NETFILE=$(networkctl status "$IFACE" --json=short | jq -r '.NetworkFile // empty')
 if [ -n "$NETFILE" ]; then
-  DROPIN_DIR="${NETFILE}.d"
+  DROPIN_DIR="/etc/systemd/network/$(basename "$NETFILE").d"
   mkdir -p "$DROPIN_DIR"
   cat > "$DROPIN_DIR/dns-override.conf" << EOF
 [DHCPv4]

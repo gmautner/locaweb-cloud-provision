@@ -685,6 +685,34 @@ class SSHVerifier:
             ip, "test ! -f /etc/apt/apt.conf.d/52-automatic-reboots")
         return rc == 0
 
+    def verify_dns_only_gateway(self, ip):
+        """Verify the active iface has ONLY the default gateway as DNS server.
+
+        Catches regressions where DHCP-supplied public DNS leaks back into
+        the link config (the failure mode addressed by the userdata DNS
+        drop-in). Returns a dict: {ok, gateway, iface, dns_servers}.
+        """
+        result = {"ok": False, "gateway": None, "iface": None,
+                  "dns_servers": []}
+        rc, stdout, _ = self.run_command(
+            ip, "ip -4 -json route show default")
+        if rc != 0 or not stdout:
+            return result
+        try:
+            route = json.loads(stdout)[0]
+            result["gateway"] = route["gateway"]
+            result["iface"] = route["dev"]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            return result
+        rc, stdout, _ = self.run_command(
+            ip, f"resolvectl dns {result['iface']}")
+        if rc != 0 or ":" not in stdout:
+            return result
+        # Format: "Link N (iface): <ip1> <ip2> ..."
+        result["dns_servers"] = stdout.split(":", 1)[1].split()
+        result["ok"] = (result["dns_servers"] == [result["gateway"]])
+        return result
+
     def verify_fail2ban(self, ip):
         """Check that fail2ban is running with the expected sshd jail settings.
 
@@ -1156,6 +1184,18 @@ class E2ETestRunner:
                     s.assert_equal(f2b["findtime"], 600,
                                    f"fail2ban findtime=600 on {label}")
 
+            # DNS: only the gateway should be configured on the active link
+            # (DHCP-provided public DNS must be suppressed by the userdata
+            # drop-in, otherwise .internal lookups can fail over to a public
+            # resolver returning NXDOMAIN).
+            for label, ip in all_ips:
+                if ip:
+                    dns = self.ssh.verify_dns_only_gateway(ip)
+                    s.assert_true(
+                        dns["ok"],
+                        f"DNS on {label} ({dns['iface']}) = only gateway "
+                        f"{dns['gateway']}; got {dns['dns_servers']}")
+
             # Snapshot policies: web and db volumes should have policies
             network_name = make_network_name(DEFAULT_ENV_NAME)
             web_vol_id = output.get("web_volume_id", "")
@@ -1281,6 +1321,13 @@ class E2ETestRunner:
                            "fail2ban bantime=3600 on web")
             s.assert_equal(f2b["findtime"], 600,
                            "fail2ban findtime=600 on web")
+
+            # DNS: only gateway should be configured on the active link
+            dns = self.ssh.verify_dns_only_gateway(web_ip)
+            s.assert_true(
+                dns["ok"],
+                f"DNS on web ({dns['iface']}) = only gateway "
+                f"{dns['gateway']}; got {dns['dns_servers']}")
 
             # Snapshot policies: web volume should have a policy
             network_name = make_network_name(DEFAULT_ENV_NAME)
@@ -1501,6 +1548,11 @@ class E2ETestRunner:
                 s.assert_true(
                     self.ssh.verify_automatic_reboot(ip, "05:00"),
                     f"Automatic reboot at 05:00 on {label} (after scale)")
+                dns = self.ssh.verify_dns_only_gateway(ip)
+                s.assert_true(
+                    dns["ok"],
+                    f"DNS on {label} ({dns['iface']}) = only gateway "
+                    f"{dns['gateway']}; got {dns['dns_servers']} (after scale)")
 
             # Teardown
             trigger_teardown("e2etest")
